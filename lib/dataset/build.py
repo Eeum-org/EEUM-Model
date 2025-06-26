@@ -127,6 +127,10 @@ def build_data_loader(cfg) -> DataLoader:
     val_indices = len(val_dataset)
     train_sub = Subset(train_dataset, indices = [i for i in range(train_indices // 100)])
     val_sub = Subset(val_dataset, indices = [i for i in range(val_indices // 100)])
+    train_sub.vocab = train_dataset.vocab
+    val_sub.vocab = val_dataset.vocab
+    train_sub.gloss = train_dataset.gloss
+    val_sub.gloss = val_dataset.gloss
     
     # def gpu_collate_fn(batch):
     #     """배치를 GPU로 이동하는 collate function"""

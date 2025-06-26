@@ -47,6 +47,7 @@ def main(args):
     model = model.to(cfg.GPU_ID)
     optimizer = build_optimizer(cfg, model)
     scheduler = build_lr_scheduler(cfg, optimizer)
+    device = "cuda" if torch.cuda.is_available() else "cpu"
     
     if cfg.RESUME:
         assert os.path.isfile(cfg.RESUME), "Error: no checkpoint directory found!"
@@ -67,7 +68,7 @@ def main(args):
         )
     else:
         # model = nn.DataParallel(model).cuda()
-        model = model.cuda()
+        model = model.to(device)
     
 
     if args.eval_only:
