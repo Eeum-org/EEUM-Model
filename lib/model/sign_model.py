@@ -1,10 +1,112 @@
 import torch
 import torch.nn as nn
-
+from efficientnet_pytorch import EfficientNet
+from lib.config.settings import EMBED_DIM
 from .layers import Conv1d, Conv2d, get_norm
 
-
 class SignModel(nn.Module):
+    def __init__(self, vocab_size):
+        super().__init__()
+        
+        # EfficientNet-B0 feature 추출기
+        # self.backbone = EfficientNet.from_pretrained('efficientnet-b0')
+        # self.backbone._fc = nn.Identity()  # 분류 헤드 제거
+        
+        # avg Pooling
+        self.gap = nn.AdaptiveAvgPool2d((1, 1))
+        
+        # self.feature_dim = 1280  # EfficientNet-B0 출력 차원
+        self.feature_dim = 1680
+        self.embed_dim = EMBED_DIM  # config에서 가져옴 (512)
+        self.num_layers = 3
+        self.num_heads = 8
+        self.head_dim = self.embed_dim // self.num_heads  # 64
+        
+        # 특징 차원 변환
+        self.feature_projection = nn.Linear(self.feature_dim, self.embed_dim)
+        
+        # Multi-Head Self-Attention
+        self.mhsa_layers = nn.ModuleList([
+            nn.MultiheadAttention(
+                embed_dim=self.embed_dim,
+                num_heads=self.num_heads,
+                dropout=0.2,
+                batch_first=True
+            ) for _ in range(self.num_layers)
+        ])
+        
+        # Feed-Forward Networks
+        self.ffn_layers = nn.ModuleList([
+            nn.Sequential(
+                nn.Linear(self.embed_dim, self.embed_dim * 4),
+                nn.GELU(),
+                nn.Linear(self.embed_dim * 4, self.embed_dim),
+                nn.Dropout(0.2)
+            ) for _ in range(self.num_layers)
+        ])
+        
+        # Layer Normalization
+        self.norm_layers = nn.ModuleList([
+            nn.LayerNorm(self.embed_dim) for _ in range(self.num_layers * 2)  # attention + ffn용
+        ])
+        
+        # 최종 분류기
+        self.classifier = nn.Linear(self.embed_dim, vocab_size)
+        
+        self._init_weights()
+
+    def forward(self, x):
+        # keypoints 데이터 처리 (B, T, V, D) 형태 가정
+        # batch, padded_frame_cnt, keypoint_shape, channel(x, y, confidence)
+        if x.dim() == 5:  # (B, T, V, K, D) keypoints 데이터
+            batch_size, seq_len, num_views, kepoint_data, coord_dim = x.shape
+            x = x.view(batch_size, seq_len, -1)  # (B, T, V, K*D)
+            # 특징 차원 변환
+            x = self.feature_projection(x)  # (B, T, embed_dim)
+            
+        # elif x.dim() == 5:  # (B, T, C, H, W) 이미지 데이터  
+        #     batch_size, seq_len, C, H, W = x.shape
+        #     x = x.view(batch_size * seq_len, C, H, W)
+        #     print(f"after view : {x.shape}")
+        #     # EfficientNet-B0 특징 추출
+        #     features = self.backbone.extract_features(x)
+        #     features = self.gap(features).squeeze(-1).squeeze(-1)
+        #     features = features.view(batch_size, seq_len, self.feature_dim)
+        #     x = self.feature_projection(features)
+            
+        # 트랜스포머 레이어 적용
+        for i in range(self.num_layers):
+            # Multi-Head Self-Attention
+            attn_out, _ = self.mhsa_layers[i](x, x, x)
+            x = self.norm_layers[i*2](x + attn_out)  # residual connection + norm
+            
+            # Feed-Forward Network
+            ffn_out = self.ffn_layers[i](x)
+            x = self.norm_layers[i*2+1](x + ffn_out)  # residual connection + norm
+        
+        # 전역 평균 풀링 후 분류
+        x = x.mean(dim=1)  # (B, embed_dim)
+        output = self.classifier(x)  # (B, vocab_size)
+        
+        return output
+
+    def _init_weights(self):
+        # 트랜스포머 부분 초기화
+        for module in [self.feature_projection, self.classifier]:
+            if isinstance(module, nn.Linear):
+                nn.init.xavier_normal_(module.weight)
+                if module.bias is not None:
+                    nn.init.constant_(module.bias, 0)
+        
+        # FFN 레이어 초기화
+        for ffn in self.ffn_layers:
+            for layer in ffn:
+                if isinstance(layer, nn.Linear):
+                    nn.init.xavier_normal_(layer.weight)
+                    if layer.bias is not None:
+                        nn.init.constant_(layer.bias, 0)
+
+class SignModel_old(nn.Module):
 
     def __init__(self, vocab):
         super().__init__()
