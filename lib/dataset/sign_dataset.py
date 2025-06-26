@@ -248,7 +248,7 @@ class SignDataset(Dataset):
         return frames
 
     def load_examples_from_csv(self, ann_file: str) -> List[dict]:
-        annotations = pd.read_csv(ann_file, sep=",", encoding='euc-kr')
+        annotations = pd.read_csv(ann_file, sep=",", encoding='utf-8')
         annotations = annotations[["Filename", "Kor"]]
         directions = ['_F', '_U', '_D', '_L', '_R']
         examples = []
