@@ -313,6 +313,6 @@ if __name__ == "__main__":
     
     args = default_argument_parser().parse_args()
     # args.config_file='/workspace/AI_model/NIA_CSLR/configs/config.yaml'
-    args.config_file='/Users/user/Downloads/TP_DATA_SUM/GIT_PROC_DIR/EEUM-Model/configs/config.yaml'
+    args.config_file='../config.yaml'
 
     main(args)

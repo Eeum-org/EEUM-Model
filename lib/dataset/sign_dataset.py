@@ -33,7 +33,7 @@ class SignDataset(Dataset):
         max_frames: int = 120,  # 최대 프레임 수 제한
         target_fps: Optional[int] = None  # 목표 FPS (다운샘플링용)
     ) -> None:
-        ann_file = os.path.join(data_root, ann_file)
+        ann_file = os.path.join(data_root, "train" if is_train else "val", "annotations", ann_file)
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         self.tfm_gens = tfm_gens
         self.tokenize = tokenize
@@ -49,7 +49,7 @@ class SignDataset(Dataset):
             T.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
         )
 
-        self.video_prefix = os.path.join(data_root, img_prefix) if img_prefix else data_root
+        self.video_prefix = os.path.join(data_root, "train" if is_train else "val", img_prefix.replace("_video", ""), img_prefix) if img_prefix else data_root
         self.examples = self.load_examples_from_csv(ann_file)
         self.is_train = is_train
         if torch.cuda.is_available():
@@ -73,11 +73,14 @@ class SignDataset(Dataset):
 
     def __len__(self):
         return len(self.examples)
+    
     def load_video_frames_torchcodec(self, video_path: str):
         """TorchCodec GPU 디코딩"""
         try:
             # GPU 디코더 생성
-            decoder = VideoDecoder(video_path, device=self.device)
+            torch.cuda.set_device("cuda:0")
+            torch.cuda.empty_cache()
+            decoder = VideoDecoder(video_path, device="cuda")
             
             total_frames = len(decoder)
             if total_frames > self.max_frames:
@@ -90,8 +93,9 @@ class SignDataset(Dataset):
             return frames
             
         except Exception as e:
+            # cuda 사용 불가시 CPU로 fallback
             print(f"TorchCodec 실패: {e}")
-            return torch.zeros((10, 224, 224, 3), device=self.device)
+            return self.load_video_frames(video_path)
 
     def load_video_frames_gpu(self, video_path: str) -> np.ndarray:
         """GPU에서 비디오 디코딩"""
