@@ -4,7 +4,7 @@ from efficientnet_pytorch import EfficientNet
 from lib.config.settings import EMBED_DIM
 from .layers import Conv1d, Conv2d, get_norm
 
-class SignModel(nn.Module):
+class SignModel_(nn.Module):
     def __init__(self, vocab_size):
         super().__init__()
         
@@ -106,7 +106,7 @@ class SignModel(nn.Module):
                     if layer.bias is not None:
                         nn.init.constant_(layer.bias, 0)
 
-class SignModel_old(nn.Module):
+class SignModel(nn.Module):
 
     def __init__(self, vocab):
         super().__init__()

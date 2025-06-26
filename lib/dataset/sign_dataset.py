@@ -1,136 +1,24 @@
-import os
 import cv2
-import csv
-import glob
-import torch
 import numpy as np
 import pandas as pd
-from torch import Tensor
-from torch.utils.data import Dataset
-from .preprocessing import load_available_views, load_json, pad_sequence, extract_kp
+import os
 from .transforms import apply_transform_gens
-from typing import Callable, List, NoReturn, Optional, Tuple
-from lib.config.settings import DATA_DIR, VOCAB_SPECIAL_TOKENS, MAX_SEQ_LEN
-from torchvision import transforms
-from .generate_annotations import _find_video_folder
+from typing import List, Optional, Callable, NoReturn, Tuple
+from torch.utils.data import Dataset
+import torch
+from torch import Tensor
+import torchvision.io as io
+from torchcodec.decoders import VideoDecoder
+from torchcodec.samplers import clips_at_regular_timestamps
+from pytorchvideo.data.encoded_video import EncodedVideo
+# from pytorchvideo.transforms import ApplyTransformToKey, UniformTemporalSubsample
+
+import torchvision.transforms.v2 as T
+
+import torch
+# import torchvision.transforms as T
 
 class SignDataset(Dataset):
-    def __init__(self, split='train', vocab=None):
-        """
-        데이터셋 초기화. annotations/[video_folder]_annotations.csv가 없으면 자동 생성.
-        """
-        self.split = split
-        self.data_dir = os.path.join(DATA_DIR, self.split)
-        self.transform = transforms.Compose([
-            transforms.Resize((224, 224)),  # EfficientNet-B0 입력 크기
-            transforms.ToTensor(),
-            transforms.Normalize(mean=[0.485, 0.456, 0.406], 
-                                std=[0.229, 0.224, 0.225])  # ImageNet 정규화
-        ])
-        # 비디오 폴더명 기반으로 참조할 CSV 경로 지정
-        video_folders = _find_video_folder(self.data_dir)
-
-        if not video_folders:
-            raise FileNotFoundError(f"No video folder found in '{self.data_dir}' to determine annotation file.")
-    
-        self.annotations_dir = os.path.join(self.data_dir, 'annotations')
-        for folder in video_folders:
-            self.base_name = os.path.split(folder)[1].replace('_video', '')
-            csv_filename = f"{self.base_name}_annotations.csv"
-            self.csv_path = os.path.join(self.annotations_dir, csv_filename)
-            # 어노테이션 CSV 파일이 없으면 자동 생성
-            if not os.path.exists(self.csv_path):
-                print(f"Annotation file '{self.csv_path}' not found. Generating it automatically...")
-                self._generate_annotations()
-
-        self.items = self._load_annotations()
-        self.vocab = vocab if vocab is not None else {}
-        if not self.vocab:
-            self._build_vocab()
-        self.vocab_itos = {}
-        for k, v in self.vocab.items():
-            self.vocab_itos[v] = k
-    def _generate_annotations(self):
-        """
-        generate_annotations.py 모듈을 호출하여 CSV 파일 생성
-        """
-        from .generate_annotations import generate_annotations_csv
-        generate_annotations_csv(self.split)
-        
-        # 생성 후에도 파일이 없는 경우 오류 발생
-        if not os.path.exists(self.csv_path):
-            raise FileNotFoundError(f"Failed to generate annotation file at '{self.csv_path}'")
-
-    def _load_annotations(self):
-        annotations = []
-        for annotation_file in os.listdir(self.annotations_dir):
-            with open(os.path.join(self.annotations_dir, annotation_file), 'r', encoding='utf-8') as f:
-                annotations.extend(csv.DictReader(f))
-        return annotations
-    
-    def _build_vocab(self):
-        self.vocab.update(VOCAB_SPECIAL_TOKENS)
-        idx = len(self.vocab)
-        for row in self.items:
-            for token in row['meaning'].split():
-                if token not in self.vocab:
-                    self.vocab[token] = idx
-                    idx += 1
-        print(f"Vocabulary built for '{self.split}' split with {len(self.vocab)} words.")
-
-    def __len__(self):
-        return len(self.items)
-
-    def __getitem__(self, idx):
-        row = self.items[idx]
-        base_folder, base_name = os.path.split(row['file_name'])
-        label_str = row['meaning']
-
-        # 사용 가능한 뷰(F,U,D,L,R)의 키포인트만 로드
-        keypoint_base_path = os.path.join(self.data_dir, base_folder, base_folder + "_keypoint")
-        available_views = load_available_views(keypoint_base_path, base_name)
-        
-        kp_seq_list = []
-        for view in available_views:
-            # 실제 데이터 구조에 맞게 수정: 폴더/파일 구조 고려
-            view_folder_path = os.path.join(keypoint_base_path, f"{base_name}_{view}")
-            
-            if os.path.exists(view_folder_path) and os.path.isdir(view_folder_path):
-                # 폴더 내 keypoints JSON 파일들 로드
-                json_files = [f for f in os.listdir(view_folder_path) if f.endswith('_keypoints.json')]
-                json_files.sort()  # 파일명 순서로 정렬
-                
-                frames = []
-                for json_file in json_files:
-                    json_path = os.path.join(view_folder_path, json_file)
-                    json_data = load_json(json_path)
-
-                    if json_data and 'people' in json_data and json_data['people']:
-                        person_data = json_data['people']
-                        frame_kp = extract_kp(person_data)
-                        frames.append(frame_kp)
-                
-                if frames:
-                    kp_seq_list.append(torch.stack(frames))
-
-
-        if not kp_seq_list:
-            keypoints = torch.zeros(MAX_SEQ_LEN, 1, 75 * 3) # (T, V, D)
-        else:
-            max_len = max(kp.shape[0] for kp in kp_seq_list)
-            padded_views = [pad_sequence(kp, max_len) for kp in kp_seq_list]
-            keypoints = torch.stack(padded_views, dim=1) # (T, V, D)
-        # if self.transform:
-        #     keypoints = self.transform(keypoints)
-        keypoints_padded = pad_sequence(keypoints, MAX_SEQ_LEN)
-        
-        # 빈 문자열 키 대신 '<unk>' 사용
-        labels = [self.vocab.get(token, self.vocab['<unk>']) for token in label_str.split()]
-        target = torch.tensor(labels, dtype=torch.long)
-        return keypoints_padded, target
-
-class SignDataset_old(Dataset):
-
     def __init__(
         self,
         data_root: str,
@@ -141,95 +29,252 @@ class SignDataset_old(Dataset):
         tokenize: Optional[Callable] = None,
         lower: bool = False,
         is_train=False,
-        exclude_token=None
-    ) -> NoReturn:
+        exclude_token=None,
+        max_frames: int = 120,  # 최대 프레임 수 제한
+        target_fps: Optional[int] = None  # 목표 FPS (다운샘플링용)
+    ) -> None:
         ann_file = os.path.join(data_root, ann_file)
-
-        # option for videos
+        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         self.tfm_gens = tfm_gens
-
-        # option for tokenization
         self.tokenize = tokenize
         self.lower = lower
         self.exclude_token = exclude_token
+        self.max_frames = max_frames
+        self.target_fps = target_fps
+        self.gpu_transforms = torch.nn.Sequential(
+            T.ToImage(),  # numpy → tensor 변환
+            T.ToDtype(torch.uint8, scale=True),  # uint8로 변환
+            T.Resize((224, 224), antialias=True),  # GPU에서 resize
+            T.ToDtype(torch.float32, scale=True),  # float32로 변환
+            T.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+        )
 
-        self.img_prefix = os.path.join(data_root, img_prefix)
+        self.video_prefix = os.path.join(data_root, img_prefix) if img_prefix else data_root
         self.examples = self.load_examples_from_csv(ann_file)
         self.is_train = is_train
+        if torch.cuda.is_available():
+            self.gpu_transforms = self.gpu_transforms.to(self.device)
 
-    def __getitem__(self, i):
-        assert hasattr(self, "vocab")
-        example = self.examples[i]
-
-        # read video -> processing
-        frames_path = example["frames"]
-
-        # ramdom duplicate and drop
-        frames_inds = np.array([i for i in range(len(frames_path))]).astype(np.int)
-        if self.is_train:
-            rand_inds = np.random.choice(
-                len(frames_path), int(len(frames_path) * 0.2), replace=False
-            )
-
-            # random frame insertion
-            total_inds = np.concatenate([frames_inds, rand_inds], 0)
-            total_inds = np.sort(total_inds)
-
-            # random frame dropping
-            rand_inds = np.random.choice(len(total_inds), int(len(total_inds) * 0.2), replace=False)
-            selected = np.delete(total_inds, rand_inds)
+    def apply_gpu_transforms(self, frames):
+        """GPU에서 transform 처리"""
+        # numpy → tensor 변환 (B, H, W, C) → (B, C, H, W)
+        if isinstance(frames, np.ndarray):
+            frames_tensor = torch.from_numpy(frames).permute(0, 3, 1, 2)
         else:
-            selected = frames_inds
-        # frames = np.stack([cv2.imread(f_path, cv2.IMREAD_COLOR) for f_path in frames_path], axis=0)  # noqa
-
-        # read selected images
+            frames_tensor = frames
         
-        try:
-            frames = np.stack([cv2.imread(frames_path[i], cv2.IMREAD_COLOR) for i in selected], axis=0)
-        except ValueError:
-            print(example)
-            #pdb.set_trace()
-        if self.tfm_gens is not None:
-            frames, _ = apply_transform_gens(self.tfm_gens, frames)
-
-        # gloss -> CTC supervision signal
-        tokens = example["Kor"]
-        indices = [self.vocab.stoi[token] for token in tokens]
-        return frames, indices
+        # GPU로 이동
+        frames_tensor = frames_tensor.to(self.device)
+        
+        # GPU에서 transform 적용
+        transformed = self.gpu_transforms(frames_tensor)
+        
+        return transformed #.cpu() #.numpy() #.permute(0, 2, 3, 1).numpy()
 
     def __len__(self):
         return len(self.examples)
+    def load_video_frames_torchcodec(self, video_path: str):
+        """TorchCodec GPU 디코딩"""
+        try:
+            # GPU 디코더 생성
+            decoder = VideoDecoder(video_path, device="cuda")
+            
+            total_frames = len(decoder)
+            if total_frames > self.max_frames:
+                indices = torch.linspace(0, total_frames-1, self.max_frames).long()
+                frames = decoder.get_frames_at(indices=indices)
+            else:
+                frames = decoder[:]
+            
+            # 이미 GPU 텐서
+            return frames
+            
+        except Exception as e:
+            print(f"TorchCodec 실패: {e}")
+            return torch.zeros((10, 224, 224, 3), device=self.device)
+
+    def load_video_frames_gpu(self, video_path: str) -> np.ndarray:
+        """GPU에서 비디오 디코딩"""
+        try:
+            # ✅ torchvision.io는 GPU 가속 지원
+            video, _, info = io.read_video(
+                video_path, 
+                pts_unit='sec',
+                backend='pyav'  # GPU 가속 백엔드
+            )
+            
+            if video.shape[0] > self.max_frames:
+                indices = torch.linspace(0, video.shape[0]-1, self.max_frames).long()
+                video = video[indices]
+            
+            return video.numpy()
+            
+        except Exception as e:
+            # fallback to CPU
+            return self.load_video_frames(video_path)
+
+    def load_video_frames(self, video_path: str) -> np.ndarray:
+        """영상 파일에서 프레임 추출"""
+        if not os.path.exists(video_path):
+            print(f"❌ 영상 파일 없음: {video_path}")
+            return np.array([])
+        
+        cap = cv2.VideoCapture(video_path)
+        if not cap.isOpened():
+            print(f"❌ 영상 파일 열기 실패: {video_path}")
+            return np.array([])
+        
+        # 영상 정보 가져오기
+        fps = cap.get(cv2.CAP_PROP_FPS)
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        
+        frames = []
+        frame_indices = self._get_frame_indices(total_frames, fps)
+        
+        for frame_idx in frame_indices:
+            cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
+            ret, frame = cap.read()
+            
+            if ret:
+                frames.append(frame)
+            else:
+                print(f"⚠️ 프레임 {frame_idx} 읽기 실패")
+                break
+        
+        cap.release()
+        
+        if frames:
+            return np.stack(frames, axis=0)
+        else:
+            print(f"⚠️ 유효한 프레임 없음: {video_path}")
+            return np.array([])
+    
+    def _get_frame_indices(self, total_frames: int, fps: float) -> List[int]:
+        """프레임 인덱스 계산 (샘플링 적용)"""
+        if self.target_fps and self.target_fps < fps:
+            # FPS 다운샘플링
+            step = int(fps / self.target_fps)
+            indices = list(range(0, total_frames, step))
+        else:
+            # 모든 프레임 사용
+            indices = list(range(total_frames))
+        
+        # 최대 프레임 수 제한
+        if len(indices) > self.max_frames:
+            # 균등 간격으로 샘플링
+            indices = np.linspace(0, len(indices)-1, self.max_frames, dtype=int)
+            indices = [indices[i] for i in range(len(indices))]
+        
+        return indices
+    
+    def __getitem__(self, i):
+        assert hasattr(self, "vocab")
+        example = self.examples[i]
+        
+        # 영상 파일 경로
+        video_filename = example["Filename"]
+        video_path = os.path.join(self.video_prefix, video_filename)
+        # directions = ['_F', '_U', '_D', '_L', '_R']
+        # vid_base_name = example["Filename"].replace(".mp4", "")
+        # for direction in directions:
+        #     # 영상 파일 존재 확인
+        #     video_path = os.path.join(self.video_prefix, vid_base_name + direction + ".mp4")
+        #     if os.path.exists(video_path):
+        # #         # 영상에서 프레임 추출
+        #         frames = self.load_video_frames(video_path)
+        #         # frames = self.load_video_frames_pytorchvideo(video_path)
+        #         if frames.size == 0:
+        #             # 빈 프레임인 경우 더미 데이터 생성
+        #             print(f"⚠️ 더미 프레임 사용: {video_filename}")
+        #             frames = np.zeros((10, 224, 224, 3), dtype=np.uint8)
+        
+        #         # frames = self.load_video_frames_pytorchvideo(video_path)
+
+        frames = self.load_video_frames_torchcodec(video_path)
+        if frames.size == 0:
+            # 빈 프레임인 경우 더미 데이터 생성
+            print(f"⚠️ 더미 프레임 사용: {video_filename}")
+            frames = np.zeros((10, 224, 224, 3), dtype = np.uint8)
+
+        # 데이터 증강 (훈련 시에만)
+        if self.is_train and len(frames) > 5:
+            frames = self._apply_temporal_augmentation(frames)
+        
+        # 변환 적용
+        frames = self.apply_gpu_transforms(frames)
+        # if self.tfm_gens is not None:
+            # frames, _ = apply_transform_gens(self.tfm_gens, frames)
+        
+        # 토큰 변환
+        tokens = example["Kor"]
+        indices = [self.vocab.stoi[token] for token in tokens]
+        
+        return frames, torch.tensor(indices, device = self.device) #indices
+    
+    def _apply_temporal_augmentation(self, frames: np.ndarray) -> np.ndarray:
+        """시간축 데이터 증강"""
+        num_frames = frames.shape[0]
+        
+        if self.is_train:
+            # ✅ 랜덤 프레임 중복 (PyTorch 연산)
+            if torch.rand(1).item() < 0.3:
+                num_dup = int(num_frames * 0.1)
+                dup_indices = torch.randperm(num_frames, device=frames.device)[:num_dup]
+                dup_frames = frames[dup_indices]
+                
+                # GPU에서 직접 결합
+                frames = torch.cat([frames, dup_frames], dim=0)
+            
+            # ✅ 랜덤 프레임 삭제 (PyTorch 연산)
+            if torch.rand(1).item() < 0.3 and frames.shape[0] > 10:
+                num_keep = int(frames.shape[0] * 0.9)
+                keep_indices = torch.randperm(frames.shape[0], device=frames.device)[:num_keep]
+                keep_indices = torch.sort(keep_indices)[0]  # 순서 유지
+                frames = frames[keep_indices]
+        
+        """ num_frames = len(frames)
+        
+        if self.is_train:
+            # 랜덤 프레임 중복
+            if np.random.random() < 0.3:
+                dup_indices = np.random.choice(num_frames, int(num_frames * 0.1), replace=False)
+                frames = np.insert(frames, dup_indices, frames[dup_indices], axis=0)
+            
+            # 랜덤 프레임 삭제
+            if np.random.random() < 0.3 and len(frames) > 10:
+                drop_indices = np.random.choice(len(frames), int(len(frames) * 0.1), replace=False)
+                frames = np.delete(frames, drop_indices, axis=0) """
+        
+        return frames
 
     def load_examples_from_csv(self, ann_file: str) -> List[dict]:
-        annotations = pd.read_csv(ann_file, sep=",",encoding='euc-kr')
+        annotations = pd.read_csv(ann_file, sep=",", encoding='euc-kr')
         annotations = annotations[["Filename", "Kor"]]
-
+        directions = ['_F', '_U', '_D', '_L', '_R']
         examples = []
         for i in range(len(annotations)):
             example = dict(annotations.iloc[i])
-            # glob all image locations
-            frames_path = glob.glob(os.path.join(self.img_prefix, example["Filename"],"*.jpg"))
-            frames_path.sort()
-            example["frames"] = frames_path
+            vid_base_name = example["Filename"].replace(".mp4", "")
+            for direction in directions:
+                # 영상 파일 존재 확인
+                video_path = os.path.join(self.video_prefix, vid_base_name + direction + ".mp4")
+                if not os.path.exists(video_path):
+                    print(f"⚠️ 영상 파일 없음: {example['Filename']}")
+                    continue
 
-            # tokenization
-            glosses_str = example["Kor"]
-            if self.tokenize is not None and isinstance(glosses_str, str):
-                if self.lower:
-                    glosses_str = glosses_str.lower()
-                tokens = self.tokenize(glosses_str.rstrip("\n"))
-                example["Kor"] = tokens
-                '''
-                example["Kor"] = [
-                    token for token in tokens
-                    # exclude some tokens in annotations, i.e., ["__ON__", "__OFF__"].
-                    if (self.exclude_token is not None and token not in self.exclude_token)
-                ]
-                '''
-            examples.append(example)
-
+                # 토큰화
+                glosses_str = example["Kor"]
+                if self.tokenize is not None and isinstance(glosses_str, str):
+                    if self.lower:
+                        glosses_str = glosses_str.lower()
+                    tokens = self.tokenize(glosses_str.rstrip("\n"))
+                    example["Kor"] = tokens
+                    example["Filename"] = video_path
+                examples.append(example)
+        
+        print(f"📊 로드된 영상: {len(examples)}개")
         return examples
-
+    
     @property
     def gloss(self):
         return [example["Kor"] for example in self.examples]
@@ -261,8 +306,11 @@ class SignDataset_old(Dataset):
             return (padded_videos, video_lengths), (glosses, gloss_lengths)
 
         (videos, video_lengths), (glosses, gloss_lengths) = pad(videos, glosses)
+        video_lengths = torch.tensor(video_lengths, device=self.device, dtype=torch.long)
+        glosses = torch.tensor(glosses, device=self.device, dtype=torch.long)
+        gloss_lengths = torch.tensor(gloss_lengths, device=self.device, dtype=torch.long)
         videos = torch.stack(videos, dim=0)
-        video_lengths = Tensor(video_lengths).long()
-        glosses = Tensor(glosses).long()
-        gloss_lengths = Tensor(gloss_lengths).long()
+        # video_lengths = Tensor(video_lengths).long()
+        # glosses = Tensor(glosses).long()
+        # gloss_lengths = Tensor(gloss_lengths).long()
         return (videos, video_lengths), (glosses, gloss_lengths)

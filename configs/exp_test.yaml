@@ -18,8 +18,8 @@ DATASET:
     STD: (0.0643, 0.0556, 0.1150)
   VOCABULARY:
     EXCLUDE_TOKENS:
-    - __ON__ #not used in ksl
-    - __OFF__
+      - __ON__ #not used in ksl
+      - __OFF__
 
 SOLVER:
   BATCH_PER_GPU: 2
@@ -57,4 +57,3 @@ NOTE: ""
 SEED: 33
 CUDNN_BENCHMARK: False
 CUDNN_DETERMINISTIC: True
-

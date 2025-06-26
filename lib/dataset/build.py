@@ -6,7 +6,7 @@ from random import shuffle
 
 from torch.utils.data import DataLoader, Dataset, Sampler
 from yacs.config import CfgNode
-
+from torch.utils.data import Subset
 from typing import List
 
 from .sign_dataset import SignDataset
@@ -67,54 +67,53 @@ def build_dataset(cfg: CfgNode) -> Dataset:
     return train_dataset, val_dataset
 
 
-class BucketBatchSampler(Sampler):
-    # want inputs to be an array
-    def __init__(self, frames_path, batch_size, drop_last=False):
-        self.batch_size = batch_size
-        self.drop_last = drop_last
-        ind_n_len = []
-        for i, p in enumerate(frames_path):
-            ind_n_len.append((i, len(p)))
-        self.ind_n_len = ind_n_len
-        self.batch_list = self._generate_batch_map()
-        self.num_batches = len(self.batch_list) if not self.drop_last else len(self.batch_list) - 1
+# class BucketBatchSampler(Sampler):
+#     # want inputs to be an array
+#     def __init__(self, frames_path, batch_size, drop_last=False):
+#         self.batch_size = batch_size
+#         self.drop_last = drop_last
+#         ind_n_len = []
+#         for i, p in enumerate(frames_path):
+#             ind_n_len.append((i, len(p)))
+#         self.ind_n_len = ind_n_len
+#         self.batch_list = self._generate_batch_map()
+#         self.num_batches = len(self.batch_list) if not self.drop_last else len(self.batch_list) - 1
 
-    def _generate_batch_map(self):
-        # shuffle all of the indices first so they are put into buckets differently
-        shuffle(self.ind_n_len)
-        # Organize lengths, e.g., batch_map[10] = [30, 124, 203, ...]
-        # <= indices of sequences of length 10
-        batch_map = OrderedDict()
-        for idx, length in self.ind_n_len:
-            if length not in batch_map:
-                batch_map[length] = [idx]
-            else:
-                batch_map[length].append(idx)
-        flattened_map = []
-        for key in sorted(batch_map.keys()):
-            # print("debug: batch_map_key_val: {}, {}".format(key, batch_map[key]))
-            flattened_map.extend(batch_map[key])
+#     def _generate_batch_map(self):
+#         # shuffle all of the indices first so they are put into buckets differently
+#         shuffle(self.ind_n_len)
+#         # Organize lengths, e.g., batch_map[10] = [30, 124, 203, ...]
+#         # <= indices of sequences of length 10
+#         batch_map = OrderedDict()
+#         for idx, length in self.ind_n_len:
+#             if length not in batch_map:
+#                 batch_map[length] = [idx]
+#             else:
+#                 batch_map[length].append(idx)
+#         flattened_map = []
+#         for key in sorted(batch_map.keys()):
+#             # print("debug: batch_map_key_val: {}, {}".format(key, batch_map[key]))
+#             flattened_map.extend(batch_map[key])
 
-        # group by batch size
-        batch_list = []
-        for i in range(0, len(flattened_map), self.batch_size):
-            batch_list.append(flattened_map[i:i + self.batch_size])
-        return batch_list
+#         # group by batch size
+#         batch_list = []
+#         for i in range(0, len(flattened_map), self.batch_size):
+#             batch_list.append(flattened_map[i:i + self.batch_size])
+#         return batch_list
 
-    def batch_count(self):
-        return self.num_batches
+#     def batch_count(self):
+#         return self.num_batches
 
-    def __len__(self):
-        return self.num_batches
+#     def __len__(self):
+#         return self.num_batches
 
-    def __iter__(self):
-        batch_list = self._generate_batch_map()
-        shuffle(batch_list)  # shuffle batch groups
-        for batch_inds in batch_list:
-            if len(batch_inds) < self.batch_size and self.drop_last:
-                continue
-            yield batch_inds
-
+#     def __iter__(self):
+#         batch_list = self._generate_batch_map()
+#         shuffle(batch_list)  # shuffle batch groups
+#         for batch_inds in batch_list:
+#             if len(batch_inds) < self.batch_size and self.drop_last:
+#                 continue
+#             yield batch_inds
 
 def build_data_loader(cfg) -> DataLoader:
     batch_per_gpu = cfg.SOLVER.BATCH_PER_GPU
@@ -124,24 +123,48 @@ def build_data_loader(cfg) -> DataLoader:
         GPU_ID = [GPU_ID]
 
     train_dataset, val_dataset = build_dataset(cfg)
+    train_indices = len(train_dataset)
+    val_indices = len(val_dataset)
+    train_sub = Subset(train_dataset, indices = [i for i in range(train_indices // 100)])
+    val_sub = Subset(val_dataset, indices = [i for i in range(val_indices // 100)])
+    
+    # def gpu_collate_fn(batch):
+    #     """배치를 GPU로 이동하는 collate function"""
+    #     videos, glosses = list(zip(*batch))
+        
+    #     # 기존 collate 로직 적용
+    #     (videos, video_lengths), (glosses, gloss_lengths) = train_dataset.collate(batch)
+        
+    #     # GPU로 이동
+    #     device = f'cuda:{cfg.GPU_ID}' if isinstance(cfg.GPU_ID, int) else cfg.GPU_ID
+    #     videos = videos.to(device)
+    #     video_lengths = video_lengths.to(device)
+    #     glosses = glosses.to(device)
+    #     gloss_lengths = gloss_lengths.to(device)
+        
+    #     return (videos, video_lengths), (glosses, gloss_lengths)
+    
     # multiple data loaders
     train_loader = DataLoader(
-        dataset=train_dataset,
-        collate_fn=train_dataset.collate,
-        batch_sampler=BucketBatchSampler(
-            [example["frames"] for example in train_dataset.examples], batch_per_gpu * len(GPU_ID)
-        ),
+        dataset=train_sub, #train_dataset,
+        collate_fn= train_dataset.collate,
+        # batch_sampler=BucketBatchSampler(
+        #     [example["frames"] for example in train_dataset.examples], batch_per_gpu * len(GPU_ID)
+        # ),
+        batch_size = batch_per_gpu * len(GPU_ID),
         shuffle=False,
         drop_last=False,
-        num_workers=worker_per_gpu * len(GPU_ID)
+        num_workers=0, #worker_per_gpu * len(GPU_ID),
+        # multiprocessing_context='spawn'
     )
     val_loader = DataLoader(
-        dataset=val_dataset,
-        collate_fn=val_dataset.collate,
+        dataset=val_sub, #val_dataset,
+        collate_fn= val_dataset.collate,
         batch_size=batch_per_gpu * len(GPU_ID),
         shuffle=False,
         drop_last=False,
-        num_workers=worker_per_gpu * len(GPU_ID)
+        num_workers=0, #worker_per_gpu * len(GPU_ID),
+        # multiprocessing_context='spawn'
     )
 
     return train_loader, val_loader

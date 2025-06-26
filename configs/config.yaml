@@ -1,14 +1,14 @@
 DATASET:
-  DATA_ROOT: "/home/storage/sde_2T"
+  DATA_ROOT: "/workspace/AI_model/data"
   TRAIN:
-    IMG_PREFIX: "NIA_sen"
-    ANN_FILE: "KSL_TRAIN_QD_final.csv"
+    IMG_PREFIX: "03_syn_word_video"
+    ANN_FILE: "03_syn_word_annotations.csv"
 
   VAL:
-    IMG_PREFIX: "NIA_sen"
-    ANN_FILE: "KSL_VAL_QD_final.csv"
+    IMG_PREFIX: "03_syn_word_video"
+    ANN_FILE: "03_syn_word_annotations.csv"
 
-  WORKER_PER_GPU: 16
+  WORKER_PER_GPU: 8
 
   TRANSFORM:
     RESIZE_IMG: (256, 256)
@@ -19,8 +19,8 @@ DATASET:
     STD: (0.0643, 0.0556, 0.1150)
   VOCABULARY:
     EXCLUDE_TOKENS:
-    - __ON__  #not used in ksl
-    - __OFF__
+      - __ON__  #not used in ksl
+      - __OFF__
 
 SOLVER:
   BATCH_PER_GPU: 2
@@ -58,4 +58,3 @@ NOTE: ""
 SEED: 33
 CUDNN_BENCHMARK: False
 CUDNN_DETERMINISTIC: True
-
