@@ -77,7 +77,7 @@ class SignDataset(Dataset):
         """TorchCodec GPU 디코딩"""
         try:
             # GPU 디코더 생성
-            decoder = VideoDecoder(video_path, device="cuda")
+            decoder = VideoDecoder(video_path, device=self.device)
             
             total_frames = len(decoder)
             if total_frames > self.max_frames:

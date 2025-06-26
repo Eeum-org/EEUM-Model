@@ -200,8 +200,7 @@ def validate(cfg, model, val_loader, criterion) -> dict:
     loader_iter = iter(val_loader)
     vocab = decoder = val_loader.dataset.vocab
     decoder = vocab.arrays_to_sentences
-    glosses_gt = val_loader.dataset.gloss
-
+    glosses_gt = []
     for _iter in range(len(val_loader)):
         with torch.no_grad():
             (videos, video_lengths), (glosses, gloss_lengths) = next(loader_iter)
@@ -219,7 +218,7 @@ def validate(cfg, model, val_loader, criterion) -> dict:
             gloss_scores = model(videos)  # (B, T, C)
             #print(gloss_scores)
             gloss_probs = gloss_scores.log_softmax(2).permute(1, 0, 2)  # (T, B, C)
-            
+            glosses_gt.extend(glosses.tolist())
             loss = criterion(gloss_probs, glosses, video_lengths.long() // 4, gloss_lengths.long())
             val_loss_meter.update(loss, n=videos.size(0))
             # log loss
@@ -285,6 +284,7 @@ def validate(cfg, model, val_loader, criterion) -> dict:
 
     assert len(all_glosses) == len(val_loader.dataset)
     decoded_gls = val_loader.dataset.vocab.arrays_to_sentences(arrays=all_glosses)
+    glosses_gt = [[val_loader.dataset.vocab.itos[i]] for i in glosses_gt]
     # Gloss clean-up function
     
     # Construct gloss sequences for metrics
