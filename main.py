@@ -174,20 +174,21 @@ def main(args):
             writer.flush()
 
         logger.info(f"epoch: {epoch + 1}/{EPOCHS} Val loss: {metrics['loss']:.3f} Val WER: {metrics['wer']:.3f}")
-
+        print(f"epoch: {epoch + 1}/{EPOCHS} loss: {loss_meter.avg:.3f} Val loss: {metrics['loss']:.3f} Val WER: {metrics['wer']:.3f}, lr : {current_lr:.1e}")
         # checkpoint
         is_best = metrics["wer"] < best_wer
         best_wer = min(best_wer, metrics["wer"])
-        save_checkpoint(
-            {
-                'epoch': epoch + 1,
-                'state_dict': model.state_dict(),
-                'wer': metrics["wer"],
-                'best_wer': best_wer,
-                'optimizer': optimizer.state_dict(),
-                'scheduler': scheduler.state_dict(),
-            }, is_best, cfg.OUTPUT_DIR, f"checkpoint.epoch_{epoch + 1}.tar"
-        )
+        if is_best:
+            save_checkpoint(
+                {
+                    'epoch': epoch + 1,
+                    'state_dict': model.state_dict(),
+                    'wer': metrics["wer"],
+                    'best_wer': best_wer,
+                    'optimizer': optimizer.state_dict(),
+                    'scheduler': scheduler.state_dict(),
+                }, is_best, cfg.OUTPUT_DIR, f"checkpoint.epoch_{epoch + 1}.tar"
+            )
 
 
 def validate(cfg, model, val_loader, criterion) -> dict:
@@ -227,9 +228,9 @@ def validate(cfg, model, val_loader, criterion) -> dict:
             for b_idx in range(glosses.shape[0]):
                 ref_seq = glosses[b_idx][:gloss_lengths[b_idx]].cpu().numpy()
                 all_references.append(vocab.arrays_to_sentences([ref_seq])[0])
-
     gls_ref = [clean_ksl(" ".join(t)) for t in all_references]
     gls_hyp = [clean_ksl(" ".join(t)) for t in all_hypotheses]
+    print(all_references, all_hypotheses, gls_hyp)
     
     metrics = wer_list(hypotheses=gls_hyp, references=gls_ref)
     metrics.update({"loss": val_loss_meter.avg})
