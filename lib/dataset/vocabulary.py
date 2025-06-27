@@ -1,139 +1,84 @@
-# coding: utf-8
+from torch.utils.data import Dataset
+from typing import List, NoReturn, Optional
 from collections import Counter, defaultdict
 
-import numpy as np
-from torch.utils.data import Dataset
+SIL_TOKEN = "<SIL>"
+UNK_TOKEN = "<UNK>"
+PAD_TOKEN = "<PAD>"
+BLANK_TOKEN = "<BNK>"
+SOS_TOKEN = "<SOS>"
+EOS_TOKEN = "<EOS>"
 
-from typing import List, NoReturn, Optional
-
-SIL_TOKEN = "<si>"
-UNK_TOKEN = "<unk>"
-PAD_TOKEN = "<pad>"
-
-
-class Vocabulary:
-    """ Vocabulary represents mapping between tokens and indices. """
-
-    def __init__(self) -> NoReturn:
-        # don't rename stoi and itos since needed for torchtext
-        # warning: stoi grows with unknown tokens, don't use for saving or size
-        self.specials = []
+class GlossVocabulary:
+    def __init__(self, tokens: Optional[List[str]] = None):
+        self.specials = [PAD_TOKEN, SOS_TOKEN, EOS_TOKEN, UNK_TOKEN, BLANK_TOKEN, SIL_TOKEN]
+        # 0: pad, 1: sos, 2: eos, 3: unk, 4: blank, 5: sil
+        
         self.itos = []
-        self.stoi = None
-        self.DEFAULT_UNK_ID = None
-
-    def _from_list(self, tokens: Optional[List[str]] = None):
-        """
-        Make vocabulary from list of tokens.
-        Tokens are assumed to be unique and pre-selected.
-        Special symbols are added if not in list.
-
-        :param tokens: list of tokens
-        """
-        self.add_tokens(tokens=self.specials + tokens)
-        assert len(self.stoi) == len(self.itos)
-
-    def __str__(self) -> str:
-        return self.stoi.__str__()
-
-    def add_tokens(self, tokens: List[str]) -> NoReturn:
-        """
-        Add list of tokens to vocabulary
-
-        :param tokens: list of tokens to add to the vocabulary
-        """
-        for t in tokens:
-            new_index = len(self.itos)
-            # add to vocab if not already there
-            if t not in self.itos:
-                self.itos.append(t)
-                self.stoi[t] = new_index
-
-    def is_unk(self, token: str) -> bool:
-        """
-        Check whether a token is covered by the vocabulary
-
-        :param token:
-        :return: True if covered, False otherwise
-        """
-        return self.stoi[token] == self.DEFAULT_UNK_ID()
-
-    def __len__(self) -> int:
-        return len(self.itos)
-
-
-class GlossVocabulary(Vocabulary):
-
-    def __init__(self, tokens: Optional[List[str]] = None, file: Optional[str] = None) -> NoReturn:
-        """
-        Create vocabulary from list of tokens or file.
-
-        Special tokens are added if not already in file or list.
-        File format: token with index i is in line i.
-
-        :param tokens: list of tokens
-        :param file: file to load vocabulary from
-        """
-        super().__init__()
-        self.specials = [SIL_TOKEN, UNK_TOKEN, PAD_TOKEN]
-        self.DEFAULT_UNK_ID = lambda: 1
-        self.stoi = defaultdict(self.DEFAULT_UNK_ID)
-        self.sil_token = SIL_TOKEN
-        self.unk_token = UNK_TOKEN
+        self.stoi = defaultdict(self._default_unk_id)
+        
         self.pad_token = PAD_TOKEN
-
+        self.sos_token = SOS_TOKEN
+        self.eos_token = EOS_TOKEN
+        self.unk_token = UNK_TOKEN
+        self.blank_token = BLANK_TOKEN
+        self.sil_token = SIL_TOKEN
+        
+        self.pad_idx = 0
+        self.sos_idx = 1
+        self.eos_idx = 2
+        self.unk_idx = 3
+        self.bnk_idx = 4
+        self.sil_idx = 5
+        
         if tokens is not None:
             self._from_list(tokens)
+        else:
+            self._from_list([])
 
-        assert self.stoi[SIL_TOKEN] == 0
+    def _default_unk_id(self):
+        return self.unk_idx
+    
+    def _from_list(self, tokens: List[str]):
+        for token in self.specials:
+            if token not in self.itos:
+                self.itos.append(token)
+                self.stoi[token] = len(self.itos) - 1
+        
+        for token in tokens:
+            if token not in self.itos and token not in self.specials:
+                self.itos.append(token)
+                self.stoi[token] = len(self.itos) - 1
 
-    def arrays_to_sentences(self, arrays: np.array) -> List[List[str]]:
-        gloss_sequences = []
+    def arrays_to_sentences(self, arrays: List[List[int]]) -> List[List[str]]:
+        sentences = []
         for array in arrays:
-            sequence = []
-            for i in array:
-                sequence.append(self.itos[i])
-            gloss_sequences.append(sequence)
-        return gloss_sequences
+            sentence = []
+            for idx in array:
+                if 0 <= idx < len(self.itos):
+                    token = self.itos[idx]
+                    if token not in [self.pad_token, self.sos_token, self.eos_token, self.blank_token]:
+                        sentence.append(token)
+                else:
+                    sentence.append(self.unk_token)
+            sentences.append(sentence)
+        return sentences
 
+    def __len__(self):
+        return len(self.itos)
 
-def filter_min(counter: Counter, minimum_freq: int):
-    """ Filter counter by min frequency """
-    filtered_counter = Counter({t: c for t, c in counter.items() if c >= minimum_freq})
-    return filtered_counter
-
-
-def sort_and_cut(counter: Counter, limit: int):
-    """ Cut counter to most frequent,
-    sorted numerically and alphabetically"""
-    # sort by frequency, then alphabetically
-    tokens_and_frequencies = sorted(counter.items(), key=lambda tup: tup[0]) 
-    tokens_and_frequencies.sort(key=lambda tup: tup[1], reverse=True)
-    vocab_tokens = [i[0] for i in tokens_and_frequencies[:limit]]
-    return vocab_tokens
-
-
-def build_vocab(cfg, dataset: Dataset, max_size: int, *, min_freq: int = 1) -> Vocabulary:
-    exclude_token = cfg.DATASET.VOCABULARY.EXCLUDE_TOKENS
-
-    tokens = []
-    for example in dataset.examples:
-        anns = example["Kor"]
-        tokens.extend(anns)
-
-    counter = Counter(tokens)
-    if min_freq > -1:
-        counter = filter_min(counter, min_freq)
-    vocab_tokens = sort_and_cut(counter, max_size)
-    assert len(vocab_tokens) <= max_size
-
+def build_vocab(annotations, max_size: int = 10000, min_freq: int = 1) -> GlossVocabulary:
+    """JSON 파일들로부터 어휘 사전 구축"""
+    import json
+    result = set()
+    for item in annotations:
+        result.update(item.split())
+    
+    # sorted_tokens = sorted(counter.items(), key=lambda x: (-x[1], x[0]))
+    vocab_tokens = [token for token in result]
+    
     vocab = GlossVocabulary(tokens=vocab_tokens)
-
-    assert len(vocab) <= max_size + len(vocab.specials)
-    assert vocab.itos[vocab.DEFAULT_UNK_ID()] == UNK_TOKEN
-
-    for i, s in enumerate(vocab.specials):
-        if i != vocab.DEFAULT_UNK_ID():
-            assert not vocab.is_unk(s)
-
+    
+    print(f"📚 어휘 사전 구축 완료: {len(vocab)} 토큰")
+    print(f"🔤 특수 토큰: SOS={vocab.sos_idx}, EOS={vocab.eos_idx}, PAD={vocab.pad_idx}, UNK={vocab.unk_idx}")
     return vocab

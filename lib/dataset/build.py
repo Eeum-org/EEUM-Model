@@ -1,87 +1,73 @@
-import sys
 import logging
-from typing import List
-from yacs.config import CfgNode
 from .vocabulary import build_vocab
-from .sign_dataset import SignDataset
+from .sign_dataset import SegmentSignDataset
 from torch.utils.data import Subset
 from torch.utils.data import DataLoader, Dataset
 
-def tokenize_text(text: str) -> List[str]:
-    return text.split()
-
-def build_dataset(cfg: CfgNode) -> Dataset:
+def build_data_loader(cfg):
+    """시간 구간별 데이터로더 빌드"""
     logger = logging.getLogger()
-
-    data_root = cfg.DATASET.DATA_ROOT
-    keypoint_train = cfg.DATASET.TRAIN.KEYPOINT_PREFIX
-    ann_file_train = cfg.DATASET.TRAIN.ANN_FILE
-    ann_file_val = cfg.DATASET.VAL.ANN_FILE
-    keypoint_val = cfg.DATASET.VAL.KEYPOINT_PREFIX
-
-    train_dataset = SignDataset(
-        data_root + "/train",
-        ann_file_train,
-        keypoint_dir=keypoint_train,
-        tokenize=tokenize_text,
+    
+    # 학습 데이터셋
+    train_dataset = SegmentSignDataset(
+        data_root=cfg.DATASET.DATA_ROOT + "/train",
+        ann_file=cfg.DATASET.TRAIN.ANN_FILE,
+        keypoint_prefix=cfg.DATASET.TRAIN.KEYPOINT_PREFIX,
         is_train=True,
+        fps=getattr(cfg.DATASET, 'FPS', 30.0),
+        max_seq_length=getattr(cfg.DATASET, 'MAX_SEQ_LENGTH', 500),
+        min_seq_length=getattr(cfg.DATASET, 'MIN_SEQ_LENGTH', 5)
     )
-    vocab = build_vocab(cfg, train_dataset, sys.maxsize, min_freq=1)
-
-    val_dataset = SignDataset(
-        data_root + "/val",
-        ann_file_val,
-        keypoint_dir=keypoint_val,
-        tokenize=tokenize_text,
+    # train_dataset_sub = train_dataset
+    indices = list(range(len(train_dataset) // 100))
+    train_dataset_sub = Subset(train_dataset, indices)
+    # 검증 데이터셋
+    val_dataset = SegmentSignDataset(
+        data_root=cfg.DATASET.DATA_ROOT + "/train",
+        ann_file=cfg.DATASET.VAL.ANN_FILE,
+        keypoint_prefix=cfg.DATASET.VAL.KEYPOINT_PREFIX,
         is_train=False,
+        fps=getattr(cfg.DATASET, 'FPS', 30.0),
+        max_seq_length=getattr(cfg.DATASET, 'MAX_SEQ_LENGTH', 500),
+        min_seq_length=getattr(cfg.DATASET, 'MIN_SEQ_LENGTH', 5)
     )
- 
-    # load vocabulary to dataset
-    train_dataset.load_vocab(vocab)
-    val_dataset.load_vocab(vocab)
-    print()
-    logger.info(
-        "{} examples for Train, {} examples for Valid. Number of Vocabulary: {}".format(
-            len(train_dataset), len(val_dataset), len(vocab.stoi)
-        )
-    )
-    print()
+    val_dataset_sub = Subset(val_dataset, indices)
+    
+    # # 어휘 사전 구축 (학습 데이터 기반)
+    # vocab = build_vocab(train_dataset, max_size=10000, min_freq=1)
 
-    return train_dataset, val_dataset
-
-def build_data_loader(cfg) -> DataLoader:
-    batch_per_gpu = cfg.SOLVER.BATCH_PER_GPU
-    worker_per_gpu = cfg.DATASET.WORKER_PER_GPU
-    GPU_ID = cfg.GPU_ID
-    if not isinstance(GPU_ID, list):
-        GPU_ID = [GPU_ID]
-
-    train_dataset, val_dataset = build_dataset(cfg)
-    train_indices = len(train_dataset)
-    val_indices = len(val_dataset)
-    train_sub = Subset(train_dataset, indices = [i for i in range(train_indices // 10)])
-    val_sub = Subset(val_dataset, indices = [i for i in range(val_indices // 10)])
-    train_sub.vocab = train_dataset.vocab
-    val_sub.vocab = val_dataset.vocab
-
-    # multiple data loaders
+    # # 데이터셋에 어휘 사전 로드
+    # train_dataset.load_vocab(vocab)
+    # val_dataset.load_vocab(vocab)
+    train_dataset_sub.vocab = train_dataset.vocab
+    val_dataset_sub.vocab = val_dataset.vocab
+    
+    # 데이터로더 생성
     train_loader = DataLoader(
-        dataset=train_sub, #train_dataset,
-        collate_fn= train_dataset.collate_fn,
-        batch_size = batch_per_gpu * len(GPU_ID),
-        shuffle=False,
-        drop_last=False,
-        num_workers=0, #worker_per_gpu * len(GPU_ID),
-        # multiprocessing_context='spawn'
+        # train_dataset,
+        train_dataset_sub,
+        batch_size=cfg.SOLVER.BATCH_PER_GPU,
+        num_workers=cfg.DATASET.WORKER_PER_GPU,
+        collate_fn=train_dataset.collate,
+        shuffle=True,
+        pin_memory=True,
+        drop_last=True,
+        persistent_workers=True,
+        prefetch_factor=8
     )
+    
     val_loader = DataLoader(
-        dataset=val_sub, #val_dataset,
-        collate_fn= val_dataset.collate_fn,
-        batch_size=batch_per_gpu * len(GPU_ID),
+        # val_dataset,
+        val_dataset_sub,
+        batch_size=cfg.SOLVER.BATCH_PER_GPU,
+        num_workers=cfg.DATASET.WORKER_PER_GPU,
+        collate_fn=val_dataset.collate,
+        # collate_fn=val_dataset.collate,
         shuffle=False,
+        pin_memory=True,
         drop_last=False,
-        num_workers=0, #worker_per_gpu * len(GPU_ID),
-        # multiprocessing_context='spawn'
+        persistent_workers=True,
+        prefetch_factor=8
     )
-
+    
     return train_loader, val_loader
