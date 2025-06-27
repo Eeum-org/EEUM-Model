@@ -4,6 +4,7 @@ import shutil
 import logging
 import torch
 import torch.nn as nn
+from tqdm.auto import tqdm
 from itertools import groupby
 from torch.utils.tensorboard import SummaryWriter
 from lib.config import get_cfg
@@ -147,8 +148,8 @@ def main(args):
     # make log with timestamp
     cfg.OUTPUT_DIR = cfg.OUTPUT_DIR + time.strftime("%Y-%m-%d_%H_%M_%S", time.localtime())
     cfg.freeze()
-
-    device = "cuda" if torch.cuda.is_available() else "cpu"
+    is_gpu = torch.cuda.is_available()
+    device = "cuda" if is_gpu else "cpu"
     train_loader, val_loader = build_data_loader(cfg)
 
     loss_gls = nn.CTCLoss(blank=0, zero_infinity=True).to(device)
@@ -203,12 +204,13 @@ def main(args):
 
     for epoch in range(start_epoch, EPOCHS):
         model.train()
-
+        if is_gpu:
+            torch.cuda.empty_cache()
         # epoch start
         epoch_start = time.perf_counter()
-        
+        train_pbar = tqdm(train_loader, desc = f"Epoch {epoch + 1} / Train", mininterval=1)
         print(f"Epoch {epoch + 1}/{EPOCHS}, Best WER so far: {best_wer:.3f}")
-        for _iter, batch in enumerate(train_loader):
+        for _iter, batch in enumerate(train_pbar):
             start = time.perf_counter()
             
             (keypoints, keypoint_lengths), (glosses, gloss_lengths) = batch
@@ -276,7 +278,10 @@ def main(args):
                     data_time_meter.reset()
                     iter_time_meter.reset()
                     loss_meter.reset()
-
+            train_pbar.set_postfix({
+                'Loss': f'{loss_meter.avg:.4f}',
+                'LR': f'{current_lr:.2e}'
+            })
         # end of epoch
         scheduler.step(loss)
         epoch_time = time.perf_counter() - epoch_start
@@ -287,7 +292,7 @@ def main(args):
         writer.flush()
 
         # validate
-        metrics = validate(cfg, model, val_loader, loss_gls)
+        metrics = validate(cfg, model, val_loader, loss_gls, epoch)
         for k, v in metrics.items():
             writer.add_scalar(f"val/{k}", v, epoch)
             writer.flush()
@@ -310,15 +315,18 @@ def main(args):
             )
 
 
-def validate(cfg, model, val_loader, criterion) -> dict:
+def validate(cfg, model, val_loader, criterion, epoch) -> dict:
     logger = logging.getLogger()
-    device = "cuda" if torch.cuda.is_available() else "cpu"
+    is_gpu = torch.cuda.is_available()
+    device = "cuda" if is_gpu else "cpu"
     model.eval()
     val_loss_meter = AverageMeter()
     all_hypotheses, all_references = [], []
     vocab = val_loader.dataset.vocab
-
-    for batch in val_loader:
+    val_pbar = tqdm(val_loader, desc = f"Epoch {epoch + 1} / Valid", mininterval=1)
+    for iter, batch in enumerate(val_pbar):
+        if is_gpu:
+            torch.cuda.empty_cache()
         with torch.no_grad():
             (keypoints, keypoint_lengths), (glosses, gloss_lengths) = batch
             keypoints = keypoints.to(device, non_blocking=True)
