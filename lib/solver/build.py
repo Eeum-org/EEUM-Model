@@ -5,7 +5,7 @@ from torch.optim.lr_scheduler import _LRScheduler
 from yacs.config import CfgNode
 
 from .scheduler import WarmupCosineLR, WarmupCosineLRFixMatch, WarmupMultiStepLR
-
+from torch.optim.lr_scheduler import ReduceLROnPlateau
 
 def build_optimizer(cfg: CfgNode, model: Module) -> Optimizer:
     """
@@ -19,8 +19,8 @@ def build_optimizer(cfg: CfgNode, model: Module) -> Optimizer:
             weight_decay=cfg.SOLVER.SGD.WEIGHT_DECAY,
             nesterov=cfg.SOLVER.SGD.NESTEROV
         )
-    elif cfg.SOLVER.OPTIM_NAME == "Adam":
-        optimizer = optim.Adam(
+    elif cfg.SOLVER.OPTIM_NAME == "AdamW":
+        optimizer = optim.AdamW(
             model.parameters(),
             lr=cfg.SOLVER.BASE_LR,
             betas=(cfg.SOLVER.ADAM.BETA1, cfg.SOLVER.ADAM.BETA2),
@@ -30,7 +30,6 @@ def build_optimizer(cfg: CfgNode, model: Module) -> Optimizer:
     else:
         raise ValueError("Unknown Optimizer: {}".format(cfg.SOLVER.OPTIM_NAME))
     return optimizer
-
 
 def build_lr_scheduler(cfg: CfgNode, optimizer: Optimizer) -> _LRScheduler:
     """
@@ -64,6 +63,18 @@ def build_lr_scheduler(cfg: CfgNode, optimizer: Optimizer) -> _LRScheduler:
             warmup_factor=cfg.SOLVER.WARMUP_FACTOR,
             warmup_iters=cfg.SOLVER.WARMUP_ITERS,
             warmup_method=cfg.SOLVER.WARMUP_METHOD,
+        )
+    elif name == "ReduceLROnPlateau":
+        # use_plateau_scheduler = True
+        return ReduceLROnPlateau(
+            optimizer,
+            mode='min',
+            factor=0.8,
+            patience=3,
+            min_lr=1e-6,
+            cooldown = 3,
+            # threshold = 5e-3,
+            # threshold_mode='rel',
         )
     else:
         raise ValueError("Unknown LR scheduler: {}".format(name))

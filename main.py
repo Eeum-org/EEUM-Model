@@ -1,31 +1,22 @@
-import logging
 import os
-import shutil
 import time
-from itertools import groupby
-from torch import from_numpy, tensor
-# import cv2
-import torch.nn.functional as F
-import numpy as np
+import shutil
+import logging
 import torch
 import torch.nn as nn
+from itertools import groupby
 from torch.utils.tensorboard import SummaryWriter
-import pdb
-# import tensorflow as tf
 from lib.config import get_cfg
 from lib.dataset import build_data_loader
 from lib.engine import default_argument_parser, default_setup
-from lib.model import SignModel
 from lib.solver import build_lr_scheduler, build_optimizer
 from lib.utils import AverageMeter, clean_ksl, wer_list
+from lib.model import KeypointTransformer
 
 best_wer = 100
 
 def setup(args):
-    """
-    Create configs and perform basic setups.
-    """
-    
+    """Create configs and perform basic setups."""
     cfg = get_cfg()
     cfg.merge_from_file(args.config_file)
     cfg.merge_from_list(args.opts)
@@ -35,19 +26,27 @@ def setup(args):
 def main(args):
     global best_wer
     logger = logging.getLogger()
-
+    logging.basicConfig(filename="main_log_logger.log", level=logging.INFO)
     EPOCHS = 80
     start_epoch = 0
     cfg = setup(args)
     cfg.freeze()
+
+    device = "cuda" if torch.cuda.is_available() else "cpu"
     train_loader, val_loader = build_data_loader(cfg)
 
-    loss_gls = nn.CTCLoss(blank=0, zero_infinity=True).to(cfg.GPU_ID)
-    model = SignModel(train_loader.dataset.vocab)
-    model = model.to(cfg.GPU_ID)
+    loss_gls = nn.CTCLoss(blank=0, zero_infinity=True).to(device)
+
+    # OpenPose 키포인트: 몸(25)+얼굴(70)+양손(21*2) = 137개 * 2차원(x,y) = 274
+    input_dim = 274
+    num_classes = len(train_loader.dataset.vocab)
+
+    model = KeypointTransformer(num_classes=num_classes, input_dim=input_dim)
+    model = model.to(device)
+
     optimizer = build_optimizer(cfg, model)
     scheduler = build_lr_scheduler(cfg, optimizer)
-    device = "cuda" if torch.cuda.is_available() else "cpu"
+
     
     if cfg.RESUME:
         assert os.path.isfile(cfg.RESUME), "Error: no checkpoint directory found!"
@@ -66,15 +65,12 @@ def main(args):
                 cfg.RESUME, cp=checkpoint, lr=current_lr
             )
         )
-    else:
-        # model = nn.DataParallel(model).cuda()
-        model = model.to(device)
     
-
     if args.eval_only:
-        metricss=validate(cfg,model, val_loader, loss_gls)
-        print("valildation loss: {metricss[loss]:.3f}  validation WER: {metricss[wer]:.3f}  ".format(metricss=metricss))
+        metricss=validate(cfg, model, val_loader, loss_gls)
+        print(f"valildation loss: {metricss['loss']:.3f}  validation WER: {metricss['wer']:.3f}")
         return
+    
     writer = SummaryWriter(cfg.OUTPUT_DIR)
     data_time_meter = AverageMeter()
     loss_meter = AverageMeter()
@@ -83,46 +79,46 @@ def main(args):
 
     for epoch in range(start_epoch, EPOCHS):
         model.train()
+
         # epoch start
         epoch_start = time.perf_counter()
-        loader_iter = iter(train_loader)
-        print("best_wer = ", best_wer)
-        for _iter in range(len(train_loader)):
+        
+        print(f"Epoch {epoch + 1}/{EPOCHS}, Best WER so far: {best_wer:.3f}")
+        for _iter, batch in enumerate(train_loader):
             start = time.perf_counter()
-            (videos, video_lengths), (glosses, gloss_lengths) = next(loader_iter)
-            print(f"processing video : {_iter}")
-            # videos = videos.to(cfg.GPU_ID)
-            # video_lengths = video_lengths.to(cfg.GPU_ID)
-            # glosses = glosses.to(cfg.GPU_ID)
-            # gloss_lengths = gloss_lengths.to(cfg.GPU_ID)
-            """
-            videos = videos.cuda()
-            video_lengths = video_lengths.cuda()
-            glosses = glosses.cuda()
-            gloss_lengths = gloss_lengths.cuda()
-            """
+            
+            (keypoints, keypoint_lengths), (glosses, gloss_lengths) = batch
+            
             data_time = time.perf_counter() - start
-            data_time_meter.update(data_time, n=videos.size(0))
+            data_time_meter.update(data_time, n=keypoints.size(0))
 
-            gloss_scores = model(videos)  # (B, T, C)
-            gloss_probs = gloss_scores.log_softmax(2).permute(1, 0, 2)  # (T, B, C)
-
-            loss = loss_gls(gloss_probs, glosses, video_lengths.long() // 4, gloss_lengths.long())
-            loss_meter.update(loss.item(), n=videos.size(0))
+            keypoints = keypoints.to(device, non_blocking=True)
+            glosses = glosses.to(device, non_blocking=True)
+            keypoint_lengths = keypoint_lengths.to(device, non_blocking=True)
+            gloss_lengths = gloss_lengths.to(device, non_blocking=True)
+            
+            # Transformer를 위한 패딩 마스크 생성
+            max_len = keypoints.size(1)
+            src_key_padding_mask = torch.arange(max_len, device=keypoints.device)[None, :] >= keypoint_lengths[:, None]
 
             optimizer.zero_grad()
+            
+            gloss_scores = model(keypoints, src_key_padding_mask=src_key_padding_mask)
+            gloss_probs = gloss_scores.log_softmax(2).permute(1, 0, 2)
+            
+            loss = loss_gls(gloss_probs, glosses, keypoint_lengths.long(), gloss_lengths.long())
+            loss_meter.update(loss.item(), n=keypoints.size(0))
+
             loss.backward()
             optimizer.step()
 
-            # log
-            current_lr = optimizer.param_groups[0]["lr"]
             iter_time = time.perf_counter() - start
-            iter_time_meter.update(iter_time, n=videos.size(0))
+            iter_time_meter.update(iter_time, n=keypoints.size(0))
 
-            # print logs
-            if (_iter > 0 and  # noqa
-                ((_iter + 1) % cfg.PERIODS.LOG_ITERS == 0)):
-                # write log
+            current_lr = optimizer.param_groups[0]["lr"]
+
+            # log
+            if (_iter + 1) % cfg.PERIODS.LOG_ITERS == 0:
                 current_iter = epoch * len(train_loader) + _iter
                 logger.info(
                     "epoch: {}/{}, iter: {}/{}  "
@@ -141,173 +137,100 @@ def main(args):
                     )
                 )
 
-                writer.add_scalar("misc/data_time", data_time_meter.avg, current_iter)
-                writer.add_scalar("misc/iter_time", iter_time_meter.avg, current_iter)
-                writer.add_scalar("train/loss", loss_meter.avg, current_iter)
-                writer.add_scalar("misc/lr", current_lr, current_iter)
-                writer.flush()
+                if (_iter + 1) % cfg.PERIODS.LOG_ITERS == 0:
+                    # write log
+                    writer.add_scalar("misc/data_time", data_time_meter.avg, current_iter)
+                    writer.add_scalar("misc/iter_time", iter_time_meter.avg, current_iter)
+                    writer.add_scalar("train/loss", loss_meter.avg, current_iter)
+                    writer.add_scalar("misc/lr", current_lr, current_iter)
+                    writer.flush()
 
-                data_time_meter.reset()
-                iter_time_meter.reset()
-                loss_meter.reset()
+                    data_time_meter.reset()
+                    iter_time_meter.reset()
+                    loss_meter.reset()
 
         # end of epoch
-        scheduler.step()
-
+        scheduler.step(loss)
         epoch_time = time.perf_counter() - epoch_start
         epoch_time_meter.update(epoch_time, n=1)
 
         remain = EPOCHS - (epoch + 1)
         writer.add_scalar("misc/eta", remain * epoch_time_meter.avg, epoch)
         writer.flush()
+
         # validate
         metrics = validate(cfg, model, val_loader, loss_gls)
         for k, v in metrics.items():
-            writer.add_scalar("val/" + k, v, epoch)
+            writer.add_scalar(f"val/{k}", v, epoch)
             writer.flush()
-        logger.info(
-            "epoch: {}/{}  "
-            "valildation loss: {metrics[loss]:.3f}  validation WER: {metrics[wer]:.3f}  ".format(
-                epoch + 1, EPOCHS, metrics=metrics
-            )
-        )
-        print()
-        print()
+
+        logger.info(f"epoch: {epoch + 1}/{EPOCHS} Val loss: {metrics['loss']:.3f} Val WER: {metrics['wer']:.3f}")
 
         # checkpoint
-        model_to_save = model.module if hasattr(model, "module") else model
         is_best = metrics["wer"] < best_wer
         best_wer = min(best_wer, metrics["wer"])
         save_checkpoint(
             {
                 'epoch': epoch + 1,
-                'state_dict': model_to_save.state_dict(),
+                'state_dict': model.state_dict(),
                 'wer': metrics["wer"],
                 'best_wer': best_wer,
                 'optimizer': optimizer.state_dict(),
                 'scheduler': scheduler.state_dict(),
-            }, is_best, cfg.OUTPUT_DIR
+            }, is_best, cfg.OUTPUT_DIR, f"checkpoint.epoch_{epoch + 1}.tar"
         )
 
 
 def validate(cfg, model, val_loader, criterion) -> dict:
     logger = logging.getLogger()
-
+    device = "cuda" if torch.cuda.is_available() else "cpu"
     model.eval()
     val_loss_meter = AverageMeter()
+    all_hypotheses, all_references = [], []
+    vocab = val_loader.dataset.vocab
 
-    all_glosses = []
-    loader_iter = iter(val_loader)
-    vocab = decoder = val_loader.dataset.vocab
-    decoder = vocab.arrays_to_sentences
-    glosses_gt = []
-    for _iter in range(len(val_loader)):
+    for batch in val_loader:
         with torch.no_grad():
-            (videos, video_lengths), (glosses, gloss_lengths) = next(loader_iter)
-            # videos = videos.to(cfg.GPU_ID)
-            # video_lengths = video_lengths.to(cfg.GPU_ID)
-            # glosses = glosses.to(cfg.GPU_ID)
-            # gloss_lengths = gloss_lengths.to(cfg.GPU_ID)
-            """
-            videos = videos.cuda()
-            video_lengths = video_lengths.cuda()
-            glosses = glosses.cuda()
-            gloss_lengths = gloss_lengths.cuda()
-            """
-            #videos=torch.ones_like(videos)
-            gloss_scores = model(videos)  # (B, T, C)
-            #print(gloss_scores)
-            gloss_probs = gloss_scores.log_softmax(2).permute(1, 0, 2)  # (T, B, C)
-            glosses_gt.extend(glosses.tolist())
-            loss = criterion(gloss_probs, glosses, video_lengths.long() // 4, gloss_lengths.long())
-            val_loss_meter.update(loss, n=videos.size(0))
-            # log loss
+            (keypoints, keypoint_lengths), (glosses, gloss_lengths) = batch
+            keypoints = keypoints.to(device, non_blocking=True)
+            glosses = glosses.to(device, non_blocking=True)
+            keypoint_lengths = keypoint_lengths.to(device, non_blocking=True)
+            gloss_lengths = gloss_lengths.to(device, non_blocking=True)
+            
+            max_len = keypoints.size(1)
+            src_key_padding_mask = torch.arange(max_len, device=keypoints.device)[None, :] >= keypoint_lengths[:, None]
 
-            # detach
-            # gloss_probs = gloss_probs.cpu().detach().numpy()  # (T, B, C)
-            log_probs = F.log_softmax(gloss_scores, dim=-1)  # GPU에서 직접
-            # gloss_probs_tf = np.concatenate(
-            #     # (C: 1~)
-            #     (gloss_probs[:, :, 1:], gloss_probs[:, :, 0, None]),
-            #     axis=-1,
-            # )
-            # sequence_length = video_lengths.long().cpu().detach().numpy() // 4
-            predictions = torch.argmax(log_probs, dim=-1)    # GPU에서 직접
+            gloss_scores = model(keypoints, src_key_padding_mask=src_key_padding_mask)
+            gloss_probs = gloss_scores.log_softmax(2).permute(1, 0, 2)
+            
+            loss = criterion(gloss_probs, glosses, keypoint_lengths.long(), gloss_lengths.long())
+            val_loss_meter.update(loss.item(), n=keypoints.size(0))
 
-            # ctc_decode, _ = tf.nn.ctc_beam_search_decoder(
-            #     inputs=gloss_probs_tf,
-            #     sequence_length=sequence_length,
-            #     beam_width=1,
-            #     top_paths=1,
-            # )
-            # ctc_decode = ctc_decode[0]
-            decoded_gloss_sequences = []
-            for b in range(predictions.shape[0]):
-                pred_seq = predictions[b][:video_lengths[b]//4]  # 길이 제한
-                # blank 제거 및 중복 제거
-                decoded = []
-                prev = -1
-                for p in pred_seq:
-                    if p != 0 and p != prev:  # 0은 blank, 중복 제거
-                        decoded.append(p.item())
-                    prev = p.item()
-                decoded_gloss_sequences.append(decoded)
-
-            # Create a decoded gloss list for each sample
-            # tmp_gloss_sequences = [[] for i in range(gloss_scores.shape[0])]  # (B, )
-            # for (value_idx, dense_idx) in enumerate(ctc_decode.indices):
-            #     tmp_gloss_sequences[dense_idx[0]].append(ctc_decode.values[value_idx].numpy() + 1)
-            # decoded_gloss_sequences = []
-            # for seq_idx in range(0, len(tmp_gloss_sequences)):
-            #     decoded_gloss_sequences.append(
-            #         [x[0] for x in groupby(tmp_gloss_sequences[seq_idx])]
-            #     )
-            all_glosses.extend(decoded_gloss_sequences)
-            if (_iter + 1) % 100 == 0:
-                logger.info(
-                    "valid iter: {}/{}  "
-                    "loss: {loss.val:.3f} (avg: {loss.avg:.3f})  ".format(
-                        _iter + 1,
-                        len(val_loader),
-                        loss=val_loss_meter,
-                    )
-                )
-                logger.info("---------------------------------------------")
-
-                decoded = decoder(arrays=decoded_gloss_sequences)
-                decoded_gt = decoder(arrays=glosses.cpu().detach().numpy())
-                for (_dec, _ref2) in zip(decoded[:4], decoded_gt[:4]):
-                    _ref2 = [gloss for gloss in _ref2 if gloss != vocab.pad_token]
-                    logger.info(" ".join(_dec))
-                    logger.info(" ".join(_ref2))
-                    print()
-
-    assert len(all_glosses) == len(val_loader.dataset)
-    decoded_gls = val_loader.dataset.vocab.arrays_to_sentences(arrays=all_glosses)
-    glosses_gt = [[val_loader.dataset.vocab.itos[i]] for i in glosses_gt]
-    # Gloss clean-up function
+            # CTC Greedy Decoding
+            predictions = torch.argmax(gloss_scores, dim=-1)
+            predictions_cpu = predictions.cpu().numpy()
+            
+            for b_idx in range(predictions_cpu.shape[0]):
+                pred_seq = predictions_cpu[b_idx]
+                decoded_indices = [k for k, g in groupby(pred_seq) if k != 0] # 0은 blank 토큰
+                all_hypotheses.append(vocab.arrays_to_sentences([decoded_indices])[0])
+            
+            for b_idx in range(glosses.shape[0]):
+                ref_seq = glosses[b_idx][:gloss_lengths[b_idx]].cpu().numpy()
+                all_references.append(vocab.arrays_to_sentences([ref_seq])[0])
+                
+    gls_ref = [clean_ksl(" ".join(t)) for t in all_references]
+    gls_hyp = [clean_ksl(" ".join(t)) for t in all_hypotheses]
     
-    # Construct gloss sequences for metrics
-    gls_ref = [clean_ksl(" ".join(t)) for t in glosses_gt]
-    gls_hyp = [clean_ksl(" ".join(t)) for t in decoded_gls]
-
-    assert len(gls_ref) == len(gls_hyp)
-    
-    # GLS Metrics
     metrics = wer_list(hypotheses=gls_hyp, references=gls_ref)
     metrics.update({"loss": val_loss_meter.avg})
-    
     return metrics
 
-
-def save_checkpoint(
-    state_dict: dict, is_best: bool, checkpoint: str, filename='checkpoint.pth.tar'
-):
-    filepath = os.path.join(checkpoint, filename)
+def save_checkpoint(state_dict, is_best, checkpoint_dir, filename='checkpoint.pth.tar'):
+    filepath = os.path.join(checkpoint_dir, filename)
     torch.save(state_dict, filepath)
     if is_best:
-        shutil.copyfile(filepath, os.path.join(checkpoint, 'model_best.pth.tar'))
-
+        shutil.copyfile(filepath, os.path.join(checkpoint_dir, 'model_best.pth.tar'))
 
 if __name__ == "__main__":
     

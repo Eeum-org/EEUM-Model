@@ -3,11 +3,11 @@ DATASET:
   TRAIN:
     IMG_PREFIX: "03_syn_word_video"
     ANN_FILE: "03_syn_word_annotations.csv"
-
+    KEYPOINT_PREFIX: "03_syn_word_keypoint"
   VAL:
     IMG_PREFIX: "03_syn_word_video"
     ANN_FILE: "03_syn_word_annotations.csv"
-
+    KEYPOINT_PREFIX: "03_syn_word_keypoint"
   WORKER_PER_GPU: 8
 
   TRANSFORM:
@@ -25,10 +25,9 @@ DATASET:
 SOLVER:
   BATCH_PER_GPU: 2
   BIAS_LR_FACTOR: 1.0
-
   RAMPDOWN_ITERS: 0
-  BASE_LR: 1e-4
-  OPTIM_NAME: "Adam"
+  BASE_LR: 1e-3
+  OPTIM_NAME: "AdamW"
   SGD:
     MOMENTUM: 0.9
     WEIGHT_DECAY: 0.0005
@@ -39,22 +38,22 @@ SOLVER:
     EPS: 1.0e-08
     WEIGHT_DECAY: 1e-4
 
-  LR_SCHEDULER_NAME: "WarmupMultiStepLR"
+  LR_SCHEDULER_NAME: "ReduceLROnPlateau"
   STEPS: (40, 60,)
   GAMMA: 0.5
   RAMPDOWN_ITERS: 0
-  WARMUP_FACTOR: 0
-  WARMUP_ITERS: 0
+  WARMUP_FACTOR: 1
+  WARMUP_ITERS: 500
   WARMUP_METHOD: "linear"
 PERIODS:
   EVAL: 1
   CHECKPOINT: 1
   LOG_ITERS: 300
-OUTPUT_DIR: outputs/ksl
+OUTPUT_DIR: outputs/segment_ksl
 RESUME: ""
 GPU_ID: 0
 NOTE: ""
 
-SEED: 33
+SEED: 42
 CUDNN_BENCHMARK: False
 CUDNN_DETERMINISTIC: True

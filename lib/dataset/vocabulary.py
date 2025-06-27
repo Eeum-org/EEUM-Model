@@ -78,8 +78,9 @@ class GlossVocabulary(Vocabulary):
         self.specials = [SIL_TOKEN, UNK_TOKEN, PAD_TOKEN]
         self.DEFAULT_UNK_ID = lambda: 1
         self.stoi = defaultdict(self.DEFAULT_UNK_ID)
-        self.pad_token = PAD_TOKEN
         self.sil_token = SIL_TOKEN
+        self.unk_token = UNK_TOKEN
+        self.pad_token = PAD_TOKEN
 
         if tokens is not None:
             self._from_list(tokens)

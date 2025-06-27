@@ -1,3 +1,3 @@
-from .sign_model import SignModel
+from .sign_model import KeypointTransformer
 
-__all__ = ["SignModel"]
+__all__ = ["KeypointTransformer"]
