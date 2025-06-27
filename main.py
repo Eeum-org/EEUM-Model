@@ -13,7 +13,7 @@ from lib.dataset import build_data_loader
 from lib.engine import default_argument_parser, default_setup
 from lib.solver import build_lr_scheduler, build_optimizer
 from lib.utils import AverageMeter, clean_ksl, wer_list
-from lib.model import KeypointTransformer
+from lib.model import KeypointTransformerWithAttention
 
 best_wer = 100
 def check_weight_initialization(model):
@@ -213,7 +213,7 @@ def main(args):
     num_classes = len(train_loader.dataset.vocab)
     
     # 모델 하이퍼파라미터 변경
-    model = KeypointTransformer(
+    model = KeypointTransformerWithAttention(
         num_classes=num_classes,
         input_dim=input_dim,
         d_model=512,
@@ -286,7 +286,7 @@ def main(args):
             optimizer.zero_grad()
             
             gloss_scores = model(keypoints, src_key_padding_mask=src_key_padding_mask)
-            gloss_probs = gloss_scores.log_softmax(2).permute(1, 0, 2)
+            gloss_probs = F.log_softmax(gloss_scores).permute(1, 0, 2)  # (T, N, C)
 
             # loss = loss_gls(gloss_probs, glosses, keypoint_lengths.long(), gloss_lengths.long())
             loss = focal_ctc_loss(gloss_probs, glosses, keypoint_lengths.long(), gloss_lengths.long(),

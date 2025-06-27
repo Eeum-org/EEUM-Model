@@ -109,14 +109,38 @@ class SignDataset(Dataset):
         ], axis=0)
         xy = pts[:, :2]
         conf = pts[:, 2]
-        if pts.shape[0] >= 6 and conf[0] > 0.1:
-            nose = xy[0]
-            rel = xy - nose
-            rel[conf < 0.1] = 0
-            L = np.linalg.norm(rel[5] - rel[2]) if conf[5] > 0.1 and conf[2] > 0.1 else 1.0
-            rel /= (L + 1e-8)
+
+        # 정규화 변경
+        if pts.shape[0] >= 6:
+            # 유효한 키포인트만 사용
+            valid_mask = conf > 0.3  # confidence 임계값 증가
+            if valid_mask.sum() > 5:  # 최소 5개 이상의 유효한 키포인트
+                valid_xy = xy[valid_mask]
+                
+                # 중심점 계산 (목 또는 유효한 키포인트들의 중심)
+                if conf[1] > 0.3:  # 목 키포인트 사용
+                    center = xy[1]
+                else:
+                    center = valid_xy.mean(axis=0)
+                
+                # 중심 기준 상대 좌표
+                rel = xy - center
+                rel[~valid_mask] = 0
+                
+                # 스케일 정규화 - robust
+                distances = np.linalg.norm(rel[valid_mask], axis=1)
+                if distances.size > 0:
+                    scale = np.percentile(distances, 95) + 1e-8  # 95% 백분위수 사용
+                    rel = rel / scale
+                    # 극값 클리핑
+                    rel = np.clip(rel, -3.0, 3.0)
+                else:
+                    rel = xy * 0.001  # 매우 작은 값으로 정규화
+            else:
+                rel = xy * 0.001
         else:
-            rel = xy
+            rel = xy * 0.001
+        
         rel = np.nan_to_num(rel, nan=0.0, posinf=1.0, neginf=-1.0)
         return rel.flatten()
     
