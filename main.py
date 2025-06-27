@@ -40,8 +40,17 @@ def main(args):
     # OpenPose 키포인트: 몸(25)+얼굴(70)+양손(21*2) = 137개 * 2차원(x,y) = 274
     input_dim = 274
     num_classes = len(train_loader.dataset.vocab)
-
-    model = KeypointTransformer(num_classes=num_classes, input_dim=input_dim)
+    
+    # 모델 하이퍼파라미터 변경
+    model = KeypointTransformer(
+        num_classes=num_classes,
+        input_dim=input_dim,
+        d_model=512,
+        nhead=8,
+        num_encoder_layers=6,
+        dim_feedforward=2048,
+        dropout=0.1
+        )
     model = model.to(device)
 
     optimizer = build_optimizer(cfg, model)
@@ -218,7 +227,7 @@ def validate(cfg, model, val_loader, criterion) -> dict:
             for b_idx in range(glosses.shape[0]):
                 ref_seq = glosses[b_idx][:gloss_lengths[b_idx]].cpu().numpy()
                 all_references.append(vocab.arrays_to_sentences([ref_seq])[0])
-                
+
     gls_ref = [clean_ksl(" ".join(t)) for t in all_references]
     gls_hyp = [clean_ksl(" ".join(t)) for t in all_hypotheses]
     
