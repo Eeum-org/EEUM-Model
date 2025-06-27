@@ -6,6 +6,7 @@ import torch
 import torch.nn as nn
 from tqdm.auto import tqdm
 from itertools import groupby
+import torch.nn.functional as F
 from torch.utils.tensorboard import SummaryWriter
 from lib.config import get_cfg
 from lib.dataset import build_data_loader
@@ -126,6 +127,58 @@ def comprehensive_model_diagnosis(model, sample_input, sample_target):
     print("END")
     print("=" * 50)
 
+def focal_ctc_loss(logits: torch.Tensor,
+                   targets: torch.Tensor,
+                   input_lengths: torch.Tensor,
+                   target_lengths: torch.Tensor,
+                   blank: int = 0,
+                   alpha: float = 0.5,
+                   gamma: float = 2.0) -> torch.Tensor:
+    """
+    logits: (T, N, C)
+    targets: (sum target lengths)
+    input_lengths, target_lengths: (N,)
+    """
+    # 로그 확률 계산
+    log_probs = F.log_softmax(logits, dim=-1)  # (T, N, C)
+
+    # 기본 CTC 손실 (스칼라)
+    ctc_loss = nn.CTCLoss(blank=0, reduction='mean', zero_infinity=True)(
+        log_probs, targets, input_lengths, target_lengths
+    )
+
+    probs = torch.exp(log_probs)    # (T, N, C)
+    # pt = probs.gather(-1, targets.view(1, -1, 1))
+    p = torch.exp(-ctc_loss)    # 스칼라 근사치
+
+    # Focal CTC 손실
+    focal_loss = alpha * (1 - p)**gamma * ctc_loss
+    return focal_loss.mean()
+
+def class_balanced_ctc_loss(log_probs: torch.Tensor,
+                            targets: torch.Tensor,
+                            input_lengths: torch.Tensor,
+                            target_lengths: torch.Tensor,
+                            samples_per_class: torch.Tensor,  # 각 클래스 샘플 수 [C]
+                            beta: float = 0.99,
+                            blank: int = 0):
+    """
+    log_probs: (T, N, C)
+    samples_per_class: (C,) 각 클래스별 데이터 수
+    """
+    # Class-balanced term 계산: w_c = (1-β)/(1 - β^{n_c})
+    cb_weights = (1 - beta) / (1 - beta**samples_per_class)  # (C,)
+
+    # 클래스별 가중치 적용
+    #    log_probs * w_c
+    weighted_log_probs = log_probs * cb_weights.view(1, 1, -1)
+
+    # CTC 손실 계산
+    ctc_loss = nn.CTCLoss(blank=0, reduction='mean', zero_infinity=True)(
+        weighted_log_probs, targets, input_lengths, target_lengths
+    )
+    return ctc_loss
+
 def setup(args):
     """Create configs and perform basic setups."""
     cfg = get_cfg()
@@ -134,6 +187,7 @@ def setup(args):
     cfg = default_setup(cfg, args)
     return cfg
 
+penalty_weight = 0.2
 def main(args):
     global best_wer
     logger = logging.getLogger()
@@ -152,7 +206,7 @@ def main(args):
     device = "cuda" if is_gpu else "cpu"
     train_loader, val_loader = build_data_loader(cfg)
 
-    loss_gls = nn.CTCLoss(blank=0, zero_infinity=True).to(device)
+    loss_gls = nn.CTCLoss(blank=0, reduction="mean", zero_infinity=True).to(device)
 
     # OpenPose 키포인트: 몸(25)+얼굴(70)+양손(21*2) = 137개 * 2차원(x,y) = 274
     input_dim = 274
@@ -234,7 +288,9 @@ def main(args):
             gloss_scores = model(keypoints, src_key_padding_mask=src_key_padding_mask)
             gloss_probs = gloss_scores.log_softmax(2).permute(1, 0, 2)
 
-            loss = loss_gls(gloss_probs, glosses, keypoint_lengths.long(), gloss_lengths.long())
+            # loss = loss_gls(gloss_probs, glosses, keypoint_lengths.long(), gloss_lengths.long())
+            loss = focal_ctc_loss(gloss_probs, glosses, keypoint_lengths.long(), gloss_lengths.long(),
+                      blank=0, alpha=0.5, gamma=2.0)
             loss_meter.update(loss.item(), n=keypoints.size(0))
 
             loss.backward()
@@ -343,7 +399,9 @@ def validate(cfg, model, val_loader, criterion, epoch) -> dict:
             gloss_scores = model(keypoints, src_key_padding_mask=src_key_padding_mask)
             gloss_probs = gloss_scores.log_softmax(2).permute(1, 0, 2)
             
-            loss = criterion(gloss_probs, glosses, keypoint_lengths.long(), gloss_lengths.long())
+            # loss = criterion(gloss_probs, glosses, keypoint_lengths.long(), gloss_lengths.long())
+            loss = focal_ctc_loss(gloss_probs, glosses, keypoint_lengths.long(), gloss_lengths.long(),
+                      blank=0, alpha=0.5, gamma=2.0)
             val_loss_meter.update(loss.item(), n=keypoints.size(0))
 
             # CTC Greedy Decoding
