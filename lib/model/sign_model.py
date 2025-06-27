@@ -42,10 +42,13 @@ class KeypointTransformer(nn.Module):
         self._init_weights()
 
     def _init_weights(self) -> None:
-        initrange = 0.1
-        self.input_projection.weight.data.uniform_(-initrange, initrange)
-        self.classifier.bias.data.zero_()
-        self.classifier.weight.data.uniform_(-initrange, initrange)
+        # 가중치 초기화 변경(uniform -> xavier)
+        for module in self.modules():
+            if isinstance(module, nn.Linear):
+                # CTC에 더 적합한 초기화
+                nn.init.xavier_uniform_(module.weight, gain=0.5)
+                if module.bias is not None:
+                    nn.init.constant_(module.bias, 0.01)
 
     def forward(self, src: Tensor, src_key_padding_mask: Tensor) -> Tensor:
         src = self.input_projection(src) * math.sqrt(self.d_model)

@@ -14,6 +14,116 @@ from lib.utils import AverageMeter, clean_ksl, wer_list
 from lib.model import KeypointTransformer
 
 best_wer = 100
+def check_weight_initialization(model):
+    """가중치 초기화 상태 확인"""
+    print("=== 가중치 초기화 상태 ===")
+    
+    for name, param in model.named_parameters():
+        if param.requires_grad:
+            # 가중치 통계
+            mean_val = param.data.mean().item()
+            std_val = param.data.std().item()
+            min_val = param.data.min().item()
+            max_val = param.data.max().item()
+            
+            print(f"{name}:")
+            print(f"  형태: {param.shape}")
+            print(f"  평균: {mean_val:.6f}, 표준편차: {std_val:.6f}")
+            print(f"  범위: [{min_val:.6f}, {max_val:.6f}]")
+            
+            # 초기화 문제 감지
+            if std_val < 1e-6:
+                print(f"  ⚠️ 표준편차가 너무 작음 (거의 0)")
+            if abs(mean_val) > 1.0:
+                print(f"  ⚠️ 평균값이 너무 큼")
+            if std_val > 2.0:
+                print(f"  ⚠️ 표준편차가 너무 큼")
+            
+            # 모든 값이 같은지 확인
+            if param.data.unique().numel() == 1:
+                print(f"  ⚠️ 모든 가중치가 동일함")
+            
+            print()
+def check_gradient_flow(model, loss):
+    """그래디언트 흐름 확인"""
+    print("=== 그래디언트 흐름 확인 ===")
+    
+    # 역전파 수행
+    loss.backward(retain_graph=True)
+    torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=20)
+
+    for name, param in model.named_parameters():
+        if param.grad is not None:
+            grad_norm = param.grad.data.norm(2).item()
+            print(f"{name}: grad_norm = {grad_norm:.6f}")
+            
+            # 그래디언트 문제 감지
+            if grad_norm < 1e-7:
+                print(f"  ⚠️ 그래디언트가 너무 작음 (vanishing)")
+            elif grad_norm > 100:
+                print(f"  ⚠️ 그래디언트가 너무 큼 (exploding)")
+            elif torch.isnan(param.grad).any():
+                print(f"  ⚠️ 그래디언트에 NaN 존재")
+        else:
+            print(f"{name}: 그래디언트 없음!")
+def debug_forward_pass(model, input_tensor):
+    """Forward pass 단계별 디버깅"""
+    print("=== Forward Pass 디버깅 ===")
+    
+    x = input_tensor
+    print(f"입력: {x.shape}, mean={x.mean():.4f}, std={x.std():.4f}")
+    
+    # 각 모듈별로 출력 확인
+    for i, (name, module) in enumerate(model.named_children()):
+        if hasattr(module, '__call__'):
+            x = module(x)
+            print(f"{i+1}. {name}: {x.shape}, mean={x.mean():.4f}, std={x.std():.4f}")
+            
+            # 이상 값 체크
+            if torch.isnan(x).any():
+                print(f"  ⚠️ {name}에서 NaN 발생!")
+                break
+            if torch.isinf(x).any():
+                print(f"  ⚠️ {name}에서 Inf 발생!")
+                break
+            if x.std() < 1e-6:
+                print(f"  ⚠️ {name}에서 출력이 거의 상수!")
+    
+    return x
+
+def comprehensive_model_diagnosis(model, sample_input, sample_target):
+    """종합적인 모델 진단"""
+    print("=" * 50)
+    print("모델 종합 진단 시작")
+    print("=" * 50)
+    
+    # 모델 구조 확인
+    print("모델 구조:")
+    print(model)
+    
+    # 가중치 초기화 확인
+    check_weight_initialization(model)
+    
+    # Forward pass 테스트
+    output = debug_forward_pass(model, sample_input)
+    
+    # Loss 계산 및 그래디언트 확인
+    if sample_target is not None:
+        criterion = nn.CTCLoss(blank=0, zero_infinity=True)
+        try:
+            print(f"shape : {sample_target.shape}, {sample_input.shape}")
+            loss = criterion(output.log_softmax(dim=-1).permute(1, 0, 2), 
+                           sample_target, 
+                           torch.tensor([output.size(1)]), 
+                           torch.tensor([len(sample_target)]))
+            print(f"Loss 계산 성공: {loss.item():.4f}")
+            check_gradient_flow(model, loss)
+        except Exception as e:
+            print(f"⚠️ Loss 계산 실패: {e}")
+    
+    print("=" * 50)
+    print("END")
+    print("=" * 50)
 
 def setup(args):
     """Create configs and perform basic setups."""
@@ -58,7 +168,6 @@ def main(args):
         dropout=0.1
         )
     model = model.to(device)
-
     optimizer = build_optimizer(cfg, model)
     scheduler = build_lr_scheduler(cfg, optimizer)
 
@@ -103,7 +212,6 @@ def main(args):
             start = time.perf_counter()
             
             (keypoints, keypoint_lengths), (glosses, gloss_lengths) = batch
-            
             data_time = time.perf_counter() - start
             data_time_meter.update(data_time, n=keypoints.size(0))
 
@@ -128,6 +236,8 @@ def main(args):
             loss_meter.update(loss.item(), n=keypoints.size(0))
 
             loss.backward()
+            # gradient clipping
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=5.0)
             optimizer.step()
 
             iter_time = time.perf_counter() - start
