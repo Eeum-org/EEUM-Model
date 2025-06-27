@@ -30,6 +30,12 @@ def main(args):
     EPOCHS = 80
     start_epoch = 0
     cfg = setup(args)
+
+    # timezone settings - for logging
+    os.environ['TZ'] = "ROK"
+    time.tzset()
+    # make log with timestamp
+    cfg.OUTPUT_DIR = cfg.OUTPUT_DIR + time.strftime("%Y-%m-%d_%H_%M_%S", time.localtime())
     cfg.freeze()
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -106,6 +112,9 @@ def main(args):
             keypoint_lengths = keypoint_lengths.to(device, non_blocking=True)
             gloss_lengths = gloss_lengths.to(device, non_blocking=True)
             
+            # NaN 처리 추가
+            keypoints = torch.nan_to_num(keypoints, nan=0.0, posinf=1.0, neginf=-1.0)
+
             # Transformer를 위한 패딩 마스크 생성
             max_len = keypoints.size(1)
             src_key_padding_mask = torch.arange(max_len, device=keypoints.device)[None, :] >= keypoint_lengths[:, None]
@@ -114,7 +123,7 @@ def main(args):
             
             gloss_scores = model(keypoints, src_key_padding_mask=src_key_padding_mask)
             gloss_probs = gloss_scores.log_softmax(2).permute(1, 0, 2)
-            
+
             loss = loss_gls(gloss_probs, glosses, keypoint_lengths.long(), gloss_lengths.long())
             loss_meter.update(loss.item(), n=keypoints.size(0))
 
@@ -207,6 +216,9 @@ def validate(cfg, model, val_loader, criterion) -> dict:
             keypoint_lengths = keypoint_lengths.to(device, non_blocking=True)
             gloss_lengths = gloss_lengths.to(device, non_blocking=True)
             
+            # NaN 처리
+            keypoints = torch.nan_to_num(keypoints, nan=0.0, posinf=1.0, neginf=-1.0)
+
             max_len = keypoints.size(1)
             src_key_padding_mask = torch.arange(max_len, device=keypoints.device)[None, :] >= keypoint_lengths[:, None]
 
@@ -221,7 +233,7 @@ def validate(cfg, model, val_loader, criterion) -> dict:
             predictions_cpu = predictions.cpu().numpy()
             
             for b_idx in range(predictions_cpu.shape[0]):
-                pred_seq = predictions_cpu[b_idx]
+                pred_seq = predictions_cpu[b_idx][:keypoint_lengths[b_idx].cpu().item()]
                 decoded_indices = [k for k, g in groupby(pred_seq) if k != 0] # 0은 blank 토큰
                 all_hypotheses.append(vocab.arrays_to_sentences([decoded_indices])[0])
             
