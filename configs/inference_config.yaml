@@ -1,0 +1,75 @@
+defaults:
+  - _self_
+
+# Inference Configuration for MSKA Model
+
+model:
+  name: "MSKA_Model"
+  input_dim: 274
+  d_model: 512
+  nhead: 4
+  num_encoder_layers: 4
+  num_decoder_layers: 4
+  dim_feedforward: 1024
+  dropout: 0.2
+
+# Data configuration for inference
+data:
+  root: "./data"
+  test:
+    video_dir: "test/video"
+    keypoint_dir: "test/keypoint"
+  
+  # Inference data loading
+  batch_size: 1
+  num_workers: 0
+
+# Inference mode settings
+inference_only: true
+checkpoint: "./test_outputs/best_model.pth"
+
+# Additional settings
+use_test: false
+extract_from_video: false
+
+# Model paths
+model_path: "./test_outputs/best_model.pth"
+vocab_path: "./test_outputs/mska_test/vocabulary.json"
+
+keypoint_extraction:
+  openpose_model_path: "/Users/user/Desktop/openpose/models"
+  confidence_threshold: 0.5
+  method: "openpose"
+
+output:
+  dir: "./test_outputs/mska_test"
+  save_best: true
+  save_every_n_epochs: 1
+  
+device:
+  use_cuda: false
+  gpu_id: 0
+
+preprocessing:
+  hand_scale: 1.5
+  normalize_center: true
+  shoulder_width_scale: true
+  hand_emphasis: true
+  cache_preprocessed: true
+  cache_dir: "./cache"
+
+inference:
+  max_len: 15
+  eos_boost_threshold: 8
+  eos_boost_value: 2.0
+
+vocab:
+  save_path: "vocabulary.json"
+  expandable: true
+  force_rebuild: false
+
+# Experiment tracking
+experiment:
+  name: "mska_inference"
+  version: "v0.1"
+  tags: ["sign_language", "transformer", "mska", "inference"]

@@ -1,16 +1,16 @@
 defaults:
   - _self_
 
-# Configuration for MSKA Model Training
+# Test Configuration for MSKA Model Training
 
 model:
   name: "MSKA_Model"
   input_dim: 274
-  d_model: 1024
-  nhead: 8
-  num_encoder_layers: 10
-  num_decoder_layers: 8
-  dim_feedforward: 2048
+  d_model: 512
+  nhead: 4
+  num_encoder_layers: 4
+  num_decoder_layers: 4
+  dim_feedforward: 1024
   dropout: 0.2
 
 dataset:
@@ -22,17 +22,17 @@ dataset:
   test_size: null
   
   # Data loading
-  batch_size: 16
-  num_workers: 16
-  persistent_workers: true
-  pin_memory: true
+  batch_size: 1
+  num_workers: 0
+  persistent_workers: false
+  pin_memory: false
   
   # Dataset splitting configuration
-  auto_split: true  # Automatically split train data if val not found
+  auto_split: false  # Automatically split train data if val not found
   split_ratios:
-    train: 0.8
-    val: 0.2
-  min_vocab_count: 2
+    train: 1.0
+    val: 0.0
+  min_vocab_count: 1
   
   # Direction filtering
   directions: ["F", "L", "R", "U", "D"]
@@ -67,15 +67,15 @@ scheduler:
   name: "ReduceLROnPlateau"
   mode: "min"
   factor: 0.5
-  patience: 5
+  patience: 2
 
 output:
-  dir: "./outputs"
+  dir: "./test_outputs"
   save_best: true
-  save_every_n_epochs: 10
+  save_every_n_epochs: 1
   
 device:
-  use_cuda: true
+  use_cuda: false
   gpu_id: 0
 
 preprocessing:
@@ -99,9 +99,9 @@ vocab:
 
 # Experiment tracking
 experiment:
-  name: "mska_main"
+  name: "mska_test"
   version: "v1.0"
-  tags: ["sign_language", "transformer", "mska"]
+  tags: ["sign_language", "transformer", "mska", "test"]
   
 # Data types and sources
 data_types:

@@ -1,0 +1,24 @@
+# @package model
+# Custom model configuration for specific preprocessing/vocab combinations
+
+# Default model configuration
+name: "CustomModel"
+input_dim: 274
+d_model: 512  # Smaller model for custom configurations
+nhead: 8
+num_encoder_layers: 6
+num_decoder_layers: 4
+dim_feedforward: 1024
+dropout: 0.1
+
+# Compatible preprocessing settings
+compatible_preprocessing:
+  hand_scale: 1.2
+  normalize_center: true
+  shoulder_width_scale: false  # Different from default
+  hand_emphasis: true
+
+# Compatible vocab settings
+compatible_vocab:
+  min_freq: 2
+  max_vocab_size: 1000
